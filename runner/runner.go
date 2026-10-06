@@ -44,9 +44,10 @@ const (
 	// binds no workspaces.
 	DefaultWorkspacePath = v1alpha1.DefaultWorkspacePath
 
-	// stopGracePeriod is how long a running task command gets to exit after
-	// SIGTERM before it is killed during shutdown.
-	stopGracePeriod = 10 * time.Second
+	// DefaultStopGracePeriod is how long a running task command gets to exit
+	// after SIGTERM before it is killed during shutdown, when
+	// Config.StopGracePeriod is zero.
+	DefaultStopGracePeriod = 10 * time.Second
 )
 
 // Config controls a single Run.
@@ -62,6 +63,9 @@ type Config struct {
 	Workspaces []*v1alpha1.Workspace
 	// OnCommandExit, when set, is called once the task command has exited.
 	OnCommandExit func(CommandExit)
+	// StopGracePeriod is how long the task command gets to exit after SIGTERM
+	// before it is killed. Zero means DefaultStopGracePeriod.
+	StopGracePeriod time.Duration
 }
 
 // mount pairs one workspace binding from the task spec with the Workspace
@@ -195,25 +199,29 @@ func Run(ctx context.Context, cfg Config) error {
 		// Keep the sandbox up and inspectable until told to stop.
 		<-ctx.Done()
 	case <-ctx.Done():
-		reportExit(cfg, cmd, stopCommand(cmd, exited))
+		grace := cfg.StopGracePeriod
+		if grace <= 0 {
+			grace = DefaultStopGracePeriod
+		}
+		reportExit(cfg, cmd, stopCommand(cmd, exited, grace))
 	}
 	return nil
 }
 
 // stopCommand asks the command's process group to terminate, kills it if it has
 // not exited within the grace period, and returns the command's exit result.
-func stopCommand(cmd *exec.Cmd, exited <-chan error) error {
+func stopCommand(cmd *exec.Cmd, exited <-chan error, grace time.Duration) error {
 	pid := cmd.Process.Pid
-	slog.Info("stopping task command", "pid", pid)
+	slog.Info("stopping task command", "pid", pid, "gracePeriod", grace)
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 
-	timer := time.NewTimer(stopGracePeriod)
+	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case err := <-exited:
 		return err
 	case <-timer.C:
-		slog.Warn("task command did not exit within grace period; killing", "pid", pid, "gracePeriod", stopGracePeriod)
+		slog.Warn("task command did not exit within grace period; killing", "pid", pid, "gracePeriod", grace)
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		return <-exited
 	}

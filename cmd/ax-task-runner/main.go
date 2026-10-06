@@ -20,6 +20,10 @@
 // Workspaces as a multi-document YAML stream in AX_WORKSPACES_YAML. For local
 // runs the specs can be read from files instead with --task-file and one or
 // more --workspace-file flags.
+//
+// How long the task command gets between SIGTERM and SIGKILL comes from
+// --stop-grace-period, which defaults to AX_STOP_GRACE_PERIOD so that a task
+// can set it through spec.env.
 package main
 
 import (
@@ -33,6 +37,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"github.com/google/ax/runner"
@@ -54,6 +59,7 @@ func main() {
 	flag.IntVar(&cfg.Port, "port", runner.DefaultPort, "Port for the metadata and guest server")
 	flag.StringVar(&taskFile, "task-file", "", "Read the Task YAML from this file instead of AX_TASK_YAML")
 	flag.Var(&wsFiles, "workspace-file", "Read Workspace YAML from this file instead of the environment; repeatable, and each file may hold several documents")
+	flag.DurationVar(&cfg.StopGracePeriod, "stop-grace-period", envDuration("AX_STOP_GRACE_PERIOD"), "How long the task command gets to exit after SIGTERM before it is killed (default AX_STOP_GRACE_PERIOD, else "+runner.DefaultStopGracePeriod.String()+")")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -78,6 +84,21 @@ func main() {
 	if err := runner.Run(ctx, cfg); err != nil {
 		fatal(err)
 	}
+}
+
+// envDuration parses the named environment variable as a duration. An unset or
+// unparsable value yields zero, which leaves the runner's default in place.
+func envDuration(name string) time.Duration {
+	v := os.Getenv(name)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ignoring invalid %s %q: %v\n", name, v, err)
+		return 0
+	}
+	return d
 }
 
 // loadSpec decodes YAML into out from file when set, otherwise from the named

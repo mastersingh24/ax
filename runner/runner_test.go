@@ -106,6 +106,24 @@ func TestRun_StopsRunningCommandOnCancel(t *testing.T) {
 	}
 }
 
+func TestRun_KillsCommandAfterConfiguredGracePeriod(t *testing.T) {
+	h := newHarness(t)
+	// Ignoring SIGTERM forces the runner to fall back to SIGKILL.
+	h.task.Spec.Command = []string{"sh", "-c", "trap '' TERM; sleep 30"}
+	h.cfg.StopGracePeriod = 200 * time.Millisecond
+	h.start(t)
+
+	time.Sleep(100 * time.Millisecond)
+	h.cancel()
+
+	// Shorter than DefaultStopGracePeriod, so this only passes if the
+	// configured grace period was used.
+	h.waitFinished(t, 5*time.Second)
+	if exit := h.waitExit(t); exit.Err == nil {
+		t.Errorf("expected the killed command to report a signal exit, got %+v", exit)
+	}
+}
+
 func TestRun_WithoutCommandWaitsForContext(t *testing.T) {
 	h := newHarness(t)
 	h.start(t)
