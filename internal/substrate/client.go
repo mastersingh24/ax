@@ -206,7 +206,25 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 const (
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
+
+	// egressTrustBundleDir is where the egress gateway's CA bundle is projected
+	// when AX_EGRESS_MITM_TRUST_BUNDLE is set.
+	egressTrustBundleDir  = "/run/ate"
+	egressTrustBundleFile = egressTrustBundleDir + "/trust-bundle.pem"
+	egressTrustBundleName = "egress-mitm.ate.dev"
 )
+
+// egressTrustEnv points common TLS stacks at the projected egress gateway CA.
+// SSL_CERT_DIR is set too so Go and OpenSSL trust only that CA: behind an
+// intercepting gateway every TLS origin is fronted by it anyway.
+var egressTrustEnv = map[string]string{
+	"SSL_CERT_FILE":       egressTrustBundleFile,
+	"SSL_CERT_DIR":        egressTrustBundleDir,
+	"REQUESTS_CA_BUNDLE":  egressTrustBundleFile,
+	"CURL_CA_BUNDLE":      egressTrustBundleFile,
+	"GIT_SSL_CAINFO":      egressTrustBundleFile,
+	"NODE_EXTRA_CA_CERTS": egressTrustBundleFile,
+}
 
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
 func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string) *ateapipb.ActorTemplate {
@@ -227,11 +245,45 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		}
 	}
 
+	// On clusters whose egress gateway intercepts TLS (Substrate's sdsmint
+	// mode), tasks must trust the gateway's CA to make any HTTPS request.
+	mitmTrust := os.Getenv("AX_EGRESS_MITM_TRUST_BUNDLE") == "true"
+	if mitmTrust {
+		merged := make(map[string]string, len(envMap)+len(egressTrustEnv))
+		for k, v := range egressTrustEnv {
+			merged[k] = v
+		}
+		for k, v := range envMap {
+			merged[k] = v // a task's own env wins
+		}
+		envMap = merged
+	}
+
 	var envList []*ateapipb.EnvVar
 	for k, v := range envMap {
 		envList = append(envList, &ateapipb.EnvVar{
 			Name:  k,
 			Value: v,
+		})
+	}
+
+	mounts := []*ateapipb.VolumeMount{{
+		Name:      "workspace",
+		MountPath: "/workspace",
+	}}
+	volumes := []*ateapipb.Volume{{
+		Name:       "workspace",
+		DurableDir: &ateapipb.DurableDirVolumeSource{},
+	}}
+	if mitmTrust {
+		mounts = append(mounts, &ateapipb.VolumeMount{Name: "egress-trust", MountPath: egressTrustBundleDir})
+		volumes = append(volumes, &ateapipb.Volume{
+			Name: "egress-trust",
+			SystemInfo: &ateapipb.SystemInfoVolumeSource{
+				DataSources: []*ateapipb.SystemInfoDataSource{{
+					TrustBundle: &ateapipb.TrustBundleDataSource{Name: egressTrustBundleName, Path: "trust-bundle.pem"},
+				}},
+			},
 		})
 	}
 
@@ -245,22 +297,16 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			Readyz: &ateapipb.ContainerReadyz{
+			WakeupProbe: &ateapipb.ContainerWakeupProbe{
 				HttpGet: &ateapipb.HTTPGetAction{
 					Path: "/readyz",
 					Port: 80,
 				},
 			},
-			VolumeMounts: []*ateapipb.VolumeMount{{
-				Name:      "workspace",
-				MountPath: "/workspace",
-			}},
+			VolumeMounts: mounts,
 		}},
-		Volumes: []*ateapipb.Volume{{
-			Name:       "workspace",
-			DurableDir: &ateapipb.DurableDirVolumeSource{},
-		}},
-		SnapshotsConfig: &ateapipb.SnapshotsConfig{
+		Volumes: volumes,
+		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
 			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
@@ -301,6 +347,55 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 		return created, nil
 	}
 	return c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
+}
+
+// BuildEgressPolicy converts a task's egress rules into a Substrate egress
+// policy. Every rule becomes an https rule: credentials can only be injected
+// into HTTPS the gateway intercepts, and on v0.3.0 Substrate's gateway ignores
+// tls_passthrough rules.
+func BuildEgressPolicy(atespace string, rules []*v1alpha1.EgressRule) *ateapipb.EgressPolicy {
+	policy := &ateapipb.EgressPolicy{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: atespace, Name: "default"},
+	}
+	for _, rule := range rules {
+		ports := rule.GetPorts()
+		if len(ports) == 0 {
+			ports = []int32{443}
+		}
+		https := &ateapipb.HTTPSRule{
+			Hostnames: rule.GetHosts(),
+			Ports:     &ateapipb.Ports{Numbers: ports},
+		}
+		if creds := rule.GetCredentials(); len(creds) > 0 {
+			https.Effects = &ateapipb.HttpRuleEffects{}
+			for _, cred := range creds {
+				https.Effects.ReplaceHeaders = append(https.Effects.ReplaceHeaders, &ateapipb.CredentialHeader{
+					Header:        cred.GetHeader(),
+					Prefix:        cred.GetPrefix(),
+					CredentialUri: cred.GetCredentialUri(),
+				})
+			}
+		}
+		policy.Rules = append(policy.Rules, &ateapipb.EgressRule{Https: https})
+	}
+	return policy
+}
+
+// EnsureEgressPolicy creates the actor's egress policy from the task's egress
+// rules. Tasks are immutable, so an existing policy is left as it is. A task
+// without egress rules gets no policy, which Substrate treats as deny-all.
+func (c *Client) EnsureEgressPolicy(ctx context.Context, atespace, actorName string, rules []*v1alpha1.EgressRule) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	_, err := c.control.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
+		Actor:        &ateapipb.ObjectRef{Atespace: atespace, Name: actorName},
+		EgressPolicy: BuildEgressPolicy(atespace, rules),
+	})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		return fmt.Errorf("creating egress policy for actor %s/%s: %w", atespace, actorName, err)
+	}
+	return nil
 }
 
 // EnsureActor creates an Actor in the specified atespace deriving from an ActorTemplate.
@@ -505,5 +600,3 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
 	}
 	return nil
 }
-
-

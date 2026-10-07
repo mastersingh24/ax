@@ -189,6 +189,14 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		return task, fmt.Errorf("ensuring actor: %w", err)
 	}
 
+	// The egress policy has to exist before the actor first runs; Substrate
+	// denies outbound traffic for an actor without one.
+	if err := r.client.EnsureEgressPolicy(ctx, atespace, actorName, task.GetSpec().GetEgress()); err != nil {
+		r.setNotReady(task, "EgressPolicyFailed", err.Error(), now)
+		task.Status.Phase = "Failed"
+		return task, fmt.Errorf("ensuring egress policy: %w", err)
+	}
+
 	// 4. Suspend or Resume the Actor
 	// Tasks are suspended by default upon creation until explicitly resumed to "Running".
 	if task.Status.Phase == "Suspended" || task.Status.Phase == "" {

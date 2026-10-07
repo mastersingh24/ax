@@ -78,6 +78,34 @@ message TaskSpec {
   // debug enables the in-container guest services (process execution and file
   // access) that back `ax ssh`. Off by default.
   bool debug = 6;
+  // egress lists the outbound destinations the task may reach. Agent Substrate
+  // denies an actor's outbound traffic unless its egress policy allows it, so a
+  // task without egress rules has no network beyond DNS.
+  repeated EgressRule egress = 7;
+}
+
+// EgressRule allows HTTPS to a set of hosts and ports, and optionally has the
+// egress gateway inject credentials into matching requests.
+message EgressRule {
+  // hosts are DNS names, or a DNS name with "*" as its leftmost label.
+  repeated string hosts = 1;
+  // ports defaults to 443 when empty.
+  repeated int32 ports = 2;
+  // credentials are injected by the egress gateway, so the task never holds
+  // them. The task sends each header with a placeholder value.
+  repeated CredentialInjection credentials = 3;
+}
+
+// CredentialInjection replaces a request header with a credential resolved by
+// the egress gateway's credential provider.
+message CredentialInjection {
+  // header is the request header to replace, e.g. "x-goog-api-key".
+  string header = 1;
+  // prefix is prepended to the credential verbatim, e.g. "Bearer ".
+  string prefix = 2;
+  // credential_uri names the credential for the provider, e.g.
+  // "ate-secret://k8s.io/default/<namespace>/<secret>/<key>".
+  string credential_uri = 3;
 }
 
 message EnvVar {
