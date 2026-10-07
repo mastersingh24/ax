@@ -42,7 +42,7 @@ const (
 	DefaultPort = 80
 	// DefaultMetadataPort is the loopback port for the metadata endpoints when
 	// Config.MetadataPort is zero.
-	DefaultMetadataPort = 8099
+	DefaultMetadataPort = v1alpha1.RunnerMetadataPort
 	// DefaultWorkspacePath is the command's working directory when the task
 	// binds no workspaces.
 	DefaultWorkspacePath = v1alpha1.DefaultWorkspacePath
