@@ -147,3 +147,44 @@ func TestMetadataServer_NoPassThroughByDefault(t *testing.T) {
 		t.Errorf("without spec.http, /sessions = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestMetadataServer_ReadyWaitsForTaskServer(t *testing.T) {
+	taskPort := freeLocalPort(t) // nothing listening yet
+	runnerPort := freeLocalPort(t)
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "t", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Http: &v1alpha1.TaskHTTP{Port: int32(taskPort)}},
+	}
+	srv := metadata.NewServer(runnerPort, task, nil)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop(context.Background())
+	srv.SetWorkspaceReady(true)
+
+	status := func(path string) int {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", runnerPort, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := status("/readyz"); got != http.StatusServiceUnavailable {
+		t.Errorf("/readyz before the task server listens = %d, want 503", got)
+	}
+	if got := status("/readyz?check=workspace"); got != http.StatusOK {
+		t.Errorf("/readyz?check=workspace = %d, want 200 (workspace only)", got)
+	}
+
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", taskPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if got := status("/readyz"); got != http.StatusOK {
+		t.Errorf("/readyz once the task server listens = %d, want 200", got)
+	}
+}
