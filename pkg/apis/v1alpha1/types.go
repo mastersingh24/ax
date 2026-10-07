@@ -361,5 +361,18 @@ func ValidateTask(t *Task) error {
 		}
 		seen[p] = r.GetName()
 	}
+	if spec.GetHttp() != nil {
+		port := spec.GetHttp().GetPort()
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("spec.http.port: %d is not a valid port", port)
+		}
+		if port == RunnerPort {
+			return fmt.Errorf("spec.http.port: %d is the runner's own port", port)
+		}
+	}
 	return nil
 }
+
+// RunnerPort is the port the task runner serves on and Agent Substrate's
+// router and readiness probe reach.
+const RunnerPort = 80

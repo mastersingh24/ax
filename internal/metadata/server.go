@@ -99,6 +99,13 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 	mux.HandleFunc("/metadata/v1alpha1/ax/task", s.handleTask)
 	mux.HandleFunc("/metadata/v1alpha1/ax/workspaces", s.handleWorkspaces)
 
+	// spec.http.port: everything the runner doesn't serve itself goes to the
+	// task's own server, since the router can only reach this port.
+	if p := task.GetSpec().GetHttp().GetPort(); p > 0 && int(p) != port {
+		mux.Handle("/", newPassThrough(int(p)))
+		slog.Info("forwarding other requests to the task", "port", p)
+	}
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.grpcServer != nil && r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			s.grpcServer.ServeHTTP(w, r)

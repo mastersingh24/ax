@@ -616,3 +616,20 @@ func TestUnmarshalYAMLLenient_IgnoresUnknownFields(t *testing.T) {
 		t.Errorf("image = %q, want img", lenient.GetSpec().GetImage())
 	}
 }
+
+func TestValidateTask_HTTPPort(t *testing.T) {
+	task := func(port int32) *v1alpha1.Task {
+		return &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "t", Atespace: "default"},
+			Spec:     &v1alpha1.TaskSpec{Http: &v1alpha1.TaskHTTP{Port: port}},
+		}
+	}
+	if err := v1alpha1.ValidateTask(task(8484)); err != nil {
+		t.Errorf("port 8484 should be valid: %v", err)
+	}
+	for _, bad := range []int32{0, -1, 70000, v1alpha1.RunnerPort} {
+		if err := v1alpha1.ValidateTask(task(bad)); err == nil {
+			t.Errorf("port %d should be rejected", bad)
+		}
+	}
+}

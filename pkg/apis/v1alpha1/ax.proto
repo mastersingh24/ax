@@ -82,6 +82,19 @@ message TaskSpec {
   // denies an actor's outbound traffic unless its egress policy allows it, so a
   // task without egress rules has no network beyond DNS.
   repeated EgressRule egress = 7;
+  // http forwards requests that reach the task through Agent Substrate's
+  // router to a server inside the task. The router only reaches the runner's
+  // port, so this is how a task serves its own API (an agent's session API,
+  // A2A, MCP, a webhook) to callers outside the sandbox.
+  TaskHTTP http = 8;
+}
+
+// TaskHTTP configures the runner's pass-through to a server inside the task.
+message TaskHTTP {
+  // port is the local port the task's server listens on. Requests for paths
+  // the runner serves itself (/healthz, /readyz, /metadata/...) are not
+  // forwarded.
+  int32 port = 1;
 }
 
 // EgressRule allows HTTPS to a set of hosts and ports, and optionally has the
