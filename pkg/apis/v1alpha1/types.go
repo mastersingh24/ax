@@ -362,5 +362,25 @@ func ValidateTask(t *Task) error {
 		}
 		seen[p] = r.GetName()
 	}
+	if spec.GetHttp() != nil {
+		port := spec.GetHttp().GetPort()
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("spec.http.port: %d is not a valid port", port)
+		}
+		if port == RunnerPort {
+			return fmt.Errorf("spec.http.port: %d is the runner's own port", port)
+		}
+		if port == RunnerMetadataPort {
+			return fmt.Errorf("spec.http.port: %d is the runner's metadata port", port)
+		}
+	}
 	return nil
 }
+
+// RunnerPort is the port the task runner serves on and Agent Substrate's
+// router and readiness probe reach.
+const RunnerPort = 80
+
+// RunnerMetadataPort is the loopback port the default task runner serves the
+// metadata endpoints on, so a task's own server can't use it.
+const RunnerMetadataPort = 8099
