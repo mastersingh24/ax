@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"time"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -181,16 +182,18 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 
 	// Directly reconcile with Substrate
 	if s.reconciler != nil {
-		workspaces := s.fetchWorkspaces(ctx, atespace, task)
-		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
+		rctx, cancel := detached(ctx)
+		defer cancel()
+		workspaces := s.fetchWorkspaces(rctx, atespace, task)
+		reconciled, err := s.reconciler.Reconcile(rctx, task, workspaces...)
 		if err != nil {
 			slog.Error("direct reconcile error on create task", "task", taskName, "error", err)
 			task.Status.Phase = "Failed"
-			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status)
+			_ = s.store.UpdateTaskStatus(rctx, atespace, taskName, task.Status)
 			return nil, status.Errorf(codes.Internal, "provisioning task on substrate: %v", err)
 		}
 		task.Status = reconciled.Status
-		if err := s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status); err != nil {
+		if err := s.store.UpdateTaskStatus(rctx, atespace, taskName, task.Status); err != nil {
 			return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 		}
 	}
@@ -284,13 +287,15 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 	task.Status.Phase = "Suspended"
 
 	if s.reconciler != nil {
-		workspaces := s.fetchWorkspaces(ctx, atespace, task)
-		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
+		rctx, cancel := detached(ctx)
+		defer cancel()
+		workspaces := s.fetchWorkspaces(rctx, atespace, task)
+		reconciled, err := s.reconciler.Reconcile(rctx, task, workspaces...)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "suspending task on substrate: %v", err)
 		}
 		task.Status = reconciled.Status
-		if err := s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status); err != nil {
+		if err := s.store.UpdateTaskStatus(rctx, atespace, taskName, task.Status); err != nil {
 			return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 		}
 	} else {
@@ -332,15 +337,17 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
 	task.Status.Phase = "Running"
 
 	if s.reconciler != nil {
-		workspaces := s.fetchWorkspaces(ctx, atespace, task)
-		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
+		rctx, cancel := detached(ctx)
+		defer cancel()
+		workspaces := s.fetchWorkspaces(rctx, atespace, task)
+		reconciled, err := s.reconciler.Reconcile(rctx, task, workspaces...)
 		if err != nil {
 			task.Status.Phase = "Failed"
-			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status)
+			_ = s.store.UpdateTaskStatus(rctx, atespace, taskName, task.Status)
 			return nil, status.Errorf(codes.Internal, "resuming task on substrate: %v", err)
 		}
 		task.Status = reconciled.Status
-		if err := s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status); err != nil {
+		if err := s.store.UpdateTaskStatus(rctx, atespace, taskName, task.Status); err != nil {
 			return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 		}
 	} else {
@@ -350,6 +357,16 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
 	}
 
 	return task, nil
+}
+
+// reconcileTimeout bounds a reconcile run on behalf of an API call.
+const reconcileTimeout = 5 * time.Minute
+
+// detached returns a context for a reconcile and its status writes that is not
+// cancelled when the caller goes away. A client giving up must not abort a
+// Substrate restore halfway or skip recording its outcome.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 }
 
 func (s *Server) fetchWorkspaces(ctx context.Context, atespace string, task *v1alpha1.Task) []*v1alpha1.Workspace {
