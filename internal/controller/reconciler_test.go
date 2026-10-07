@@ -51,6 +51,7 @@ type mockControlServer struct {
 	crashedActor      string
 	revertedActors    []string
 	egressPolicies    map[string]*ateapipb.EgressPolicy
+	lastTemplate      *ateapipb.ActorTemplate
 }
 
 func (m *mockControlServer) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
@@ -84,6 +85,7 @@ func (m *mockControlServer) CreateActorTemplate(_ context.Context, req *ateapipb
 	}
 	tmpl := req.GetActorTemplate()
 	m.actorTemplates[tmpl.GetMetadata().GetName()] = true
+	m.lastTemplate = tmpl
 	return tmpl, nil
 }
 
@@ -352,6 +354,13 @@ func TestTaskReconciler_CreatesEgressPolicy(t *testing.T) {
 	headers := https.GetEffects().GetReplaceHeaders()
 	if len(headers) != 1 || headers[0].GetHeader() != "x-goog-api-key" || headers[0].GetCredentialUri() != "ate-secret://k8s.io/default/creds/gemini/api-key" {
 		t.Errorf("unexpected header injection %v", headers)
+	}
+
+	// Runners never see egress rules: older runner images reject unknown fields.
+	for _, e := range mockSrv.lastTemplate.GetContainers()[0].GetEnv() {
+		if e.GetName() == "AX_TASK_YAML" && (strings.Contains(e.GetValue(), "egress:") || strings.Contains(e.GetValue(), "credentialUri")) {
+			t.Errorf("AX_TASK_YAML should not carry egress rules:\n%s", e.GetValue())
+		}
 	}
 }
 
