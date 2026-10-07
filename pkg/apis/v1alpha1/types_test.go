@@ -711,3 +711,20 @@ func TestUnmarshalYAMLLenient_NormalizesWorkspace(t *testing.T) {
 		t.Errorf("mcp servers = %v, want one named srv", got)
 	}
 }
+
+func TestValidateTask_HTTPPort(t *testing.T) {
+	task := func(port int32) *v1alpha1.Task {
+		return &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "t", Atespace: "default"},
+			Spec:     &v1alpha1.TaskSpec{Http: &v1alpha1.TaskHTTP{Port: port}},
+		}
+	}
+	if err := v1alpha1.ValidateTask(task(8484)); err != nil {
+		t.Errorf("port 8484 should be valid: %v", err)
+	}
+	for _, bad := range []int32{0, -1, 70000, v1alpha1.RunnerPort, v1alpha1.RunnerMetadataPort} {
+		if err := v1alpha1.ValidateTask(task(bad)); err == nil {
+			t.Errorf("port %d should be rejected", bad)
+		}
+	}
+}
