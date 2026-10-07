@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/ax/internal/controller"
 	"github.com/google/ax/internal/lock"
@@ -189,18 +190,21 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 		return nil, status.Errorf(codes.Internal, "saving task: %v", err)
 	}
 
-	// New tasks start suspended.
-	if err := s.reconciler.Suspend(ctx, task, s.fetchWorkspace(ctx, atespace, task)); err != nil {
-		return nil, s.recordFailure(ctx, task, "provisioning", err)
+	// New tasks start suspended. The Substrate work and the writes that
+	// record it run detached from the caller (#452).
+	rctx, cancel := detached(ctx)
+	defer cancel()
+	if err := s.reconciler.Suspend(rctx, task, s.fetchWorkspace(rctx, atespace, task)); err != nil {
+		return nil, s.recordFailure(rctx, task, "provisioning", err)
 	}
 	// The actor exists, so reads take the task's phase from it from now on.
 	task.Status.Phase = ""
-	if err := s.updateTask(ctx, atespace, taskName, task.Status); err != nil {
+	if err := s.updateTask(rctx, atespace, taskName, task.Status); err != nil {
 		return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 	}
 
 	// Report the actor as it is now, as GetTask would.
-	s.applyActor(ctx, task)
+	s.applyActor(rctx, task)
 	return task, nil
 }
 
@@ -272,7 +276,9 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 		task.Status = &v1alpha1.TaskStatus{}
 	}
 
-	if err := s.reconciler.Suspend(ctx, task, s.fetchWorkspace(ctx, atespace, task)); err != nil {
+	rctx, cancel := detached(ctx)
+	defer cancel()
+	if err := s.reconciler.Suspend(rctx, task, s.fetchWorkspace(rctx, atespace, task)); err != nil {
 		// Store nothing: the actor keeps its state on Substrate, and a stored
 		// Pending or Failed would hide it.
 		if substrate.IsTransientError(err) {
@@ -284,12 +290,12 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 	// phase from the actor. This also clears the Terminating left by a failed
 	// DeleteTask, which cancels that deletion.
 	task.Status.Phase = ""
-	if err := s.updateTask(ctx, atespace, taskName, task.Status); err != nil {
+	if err := s.updateTask(rctx, atespace, taskName, task.Status); err != nil {
 		return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 	}
 
 	// Report the actor as it is now, as GetTask would.
-	s.applyActor(ctx, task)
+	s.applyActor(rctx, task)
 	return task, nil
 }
 
@@ -321,20 +327,32 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
 		task.Status = &v1alpha1.TaskStatus{}
 	}
 
-	if err := s.reconciler.Resume(ctx, task, s.fetchWorkspace(ctx, atespace, task)); err != nil {
-		return nil, s.recordFailure(ctx, task, "resuming", err)
+	rctx, cancel := detached(ctx)
+	defer cancel()
+	if err := s.reconciler.Resume(rctx, task, s.fetchWorkspace(rctx, atespace, task)); err != nil {
+		return nil, s.recordFailure(rctx, task, "resuming", err)
 	}
 	// Clear any Pending or Failed left by an earlier failure, so reads take the
 	// phase from the actor. This also clears the Terminating left by a failed
 	// DeleteTask, which cancels that deletion.
 	task.Status.Phase = ""
-	if err := s.updateTask(ctx, atespace, taskName, task.Status); err != nil {
+	if err := s.updateTask(rctx, atespace, taskName, task.Status); err != nil {
 		return nil, status.Errorf(codes.Internal, "updating task status: %v", err)
 	}
 
 	// Report the actor as it is now, as GetTask would.
-	s.applyActor(ctx, task)
+	s.applyActor(rctx, task)
 	return task, nil
+}
+
+// reconcileTimeout bounds the Substrate work done on behalf of an API call.
+const reconcileTimeout = 5 * time.Minute
+
+// detached returns a context for the Substrate work and its status writes that
+// is not cancelled when the caller goes away. A client giving up must not
+// abort a Substrate restore halfway or skip recording its outcome (#452).
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 }
 
 // recordFailure stores the status of a task that could not be provisioned or
