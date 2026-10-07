@@ -595,3 +595,24 @@ func TestValidateWorkspace_Files(t *testing.T) {
 		t.Errorf("expected path is required error, got %v", err)
 	}
 }
+
+func TestUnmarshalYAMLLenient_IgnoresUnknownFields(t *testing.T) {
+	doc := "metadata:\n  name: t\n  atespace: default\nspec:\n  image: img\n  fieldFromTheFuture: 1\n"
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(doc), &node); err != nil {
+		t.Fatal(err)
+	}
+
+	var strict v1alpha1.Task
+	if err := node.Decode(&strict); err == nil {
+		t.Fatal("strict decoding should reject an unknown field")
+	}
+
+	var lenient v1alpha1.Task
+	if err := v1alpha1.UnmarshalYAMLLenient(&node, &lenient); err != nil {
+		t.Fatalf("lenient decoding failed: %v", err)
+	}
+	if lenient.GetSpec().GetImage() != "img" {
+		t.Errorf("image = %q, want img", lenient.GetSpec().GetImage())
+	}
+}

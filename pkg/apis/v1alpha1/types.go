@@ -58,6 +58,9 @@ const (
 var (
 	protoMarshal   = protojson.MarshalOptions{}
 	protoUnmarshal = protojson.UnmarshalOptions{} // unknown fields are errors
+	// protoUnmarshalLenient is for specs the control plane hands to a runner,
+	// which may come from a newer control plane than the runner image.
+	protoUnmarshalLenient = protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
 // normalizer rewrites a generically decoded document in place so legacy shapes
@@ -73,6 +76,25 @@ func marshalYAML(m proto.Message) (any, error) {
 }
 
 func unmarshalYAML(value *yaml.Node, m proto.Message, normalize normalizer) error {
+	return unmarshalYAMLWith(value, m, normalize, protoUnmarshal)
+}
+
+// UnmarshalYAMLLenient decodes a Task, Workspace or Model like their
+// UnmarshalYAML methods but ignores fields it doesn't know. Runners use it for
+// the specs the control plane passes them, so a runner image keeps working
+// when a newer control plane adds fields it doesn't use.
+func UnmarshalYAMLLenient(value *yaml.Node, m proto.Message) error {
+	var normalize normalizer
+	switch m.(type) {
+	case *Workspace:
+		normalize = normalizeWorkspace
+	case *Model:
+		normalize = normalizeModel
+	}
+	return unmarshalYAMLWith(value, m, normalize, protoUnmarshalLenient)
+}
+
+func unmarshalYAMLWith(value *yaml.Node, m proto.Message, normalize normalizer, opts protojson.UnmarshalOptions) error {
 	var doc any
 	if err := value.Decode(&doc); err != nil {
 		return err
@@ -84,7 +106,7 @@ func unmarshalYAML(value *yaml.Node, m proto.Message, normalize normalizer) erro
 	if err != nil {
 		return fmt.Errorf("converting yaml to json: %w", err)
 	}
-	return protoUnmarshal.Unmarshal(data, m)
+	return opts.Unmarshal(data, m)
 }
 
 // jsonToYAMLNode converts a JSON document into a yaml.Node tree, preserving

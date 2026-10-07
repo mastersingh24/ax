@@ -36,6 +36,7 @@ import (
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"github.com/google/ax/runner"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -81,8 +82,10 @@ func main() {
 }
 
 // loadSpec decodes YAML into out from file when set, otherwise from the named
-// environment variable. It is not an error for neither to be present.
-func loadSpec(file, envVar string, out any) error {
+// environment variable. It is not an error for neither to be present. Unknown
+// fields are ignored, so a runner image keeps working with a newer control
+// plane.
+func loadSpec(file, envVar string, out proto.Message) error {
 	var raw []byte
 	switch {
 	case file != "":
@@ -96,7 +99,11 @@ func loadSpec(file, envVar string, out any) error {
 	default:
 		return nil
 	}
-	if err := yaml.Unmarshal(raw, out); err != nil {
+	var node yaml.Node
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		return fmt.Errorf("parsing %T: %w", out, err)
+	}
+	if err := v1alpha1.UnmarshalYAMLLenient(&node, out); err != nil {
 		return fmt.Errorf("parsing %T: %w", out, err)
 	}
 	return nil
@@ -124,12 +131,16 @@ func loadWorkspaces(files []string) ([]*v1alpha1.Workspace, error) {
 	for _, src := range sources {
 		dec := yaml.NewDecoder(strings.NewReader(string(src)))
 		for {
-			var ws v1alpha1.Workspace
-			err := dec.Decode(&ws)
+			var node yaml.Node
+			err := dec.Decode(&node)
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
+				return nil, fmt.Errorf("parsing workspace yaml: %w", err)
+			}
+			var ws v1alpha1.Workspace
+			if err := v1alpha1.UnmarshalYAMLLenient(&node, &ws); err != nil {
 				return nil, fmt.Errorf("parsing workspace yaml: %w", err)
 			}
 			if ws.GetMetadata() != nil {

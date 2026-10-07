@@ -158,6 +158,12 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	// must not create new golden snapshots.
 	launchTask := proto.Clone(task).(*v1alpha1.Task)
 	launchTask.Status = nil
+	// The runner never needs egress rules (the control plane applies them as
+	// a Substrate egress policy), and runners built before the field existed
+	// reject Task YAML that contains it.
+	if launchTask.Spec != nil {
+		launchTask.Spec.Egress = nil
+	}
 	if taskYAML, err := yaml.Marshal(launchTask); err == nil {
 		extraEnv["AX_TASK_YAML"] = string(taskYAML)
 	}
