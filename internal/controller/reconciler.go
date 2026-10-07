@@ -245,6 +245,13 @@ func (r *TaskReconciler) ensureSubstrateResources(ctx context.Context, task *v1a
 		r.setNotReady(task, v1alpha1.ReasonActorCreationFailed, err.Error(), now)
 		return fmt.Errorf("ensuring actor: %w", err)
 	}
+
+	// The egress policy has to exist before the actor first runs; Substrate
+	// denies outbound traffic for an actor without one.
+	if err := r.client.EnsureEgressPolicy(ctx, atespace, actorName, task.GetSpec().GetEgress()); err != nil {
+		r.setNotReady(task, "EgressPolicyFailed", err.Error(), now)
+		return fmt.Errorf("ensuring egress policy: %w", err)
+	}
 	return nil
 }
 
