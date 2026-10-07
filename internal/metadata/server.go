@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agent-substrate/env/guest"
 	"github.com/google/ax/pkg/apis/v1alpha1"
@@ -33,14 +34,16 @@ import (
 // Server is the cloud-style metadata server running inside the task actor container,
 // multiplexing HTTP metadata endpoints and guest gRPC daemon services on a single port.
 type Server struct {
-	port           int
-	server         *http.Server
-	grpcServer     *grpc.Server
-	grpcCleanup    func()
-	mu             sync.RWMutex
-	task           *v1alpha1.Task
-	workspaces     []*v1alpha1.Workspace
-	workspaceReady bool
+	port int
+	// passThroughPort is the task server's port when spec.http.port is set.
+	passThroughPort int
+	server          *http.Server
+	grpcServer      *grpc.Server
+	grpcCleanup     func()
+	mu              sync.RWMutex
+	task            *v1alpha1.Task
+	workspaces      []*v1alpha1.Workspace
+	workspaceReady  bool
 }
 
 // ServerOptions configures optional settings for the metadata and guest server.
@@ -102,6 +105,7 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 	// spec.http.port: everything the runner doesn't serve itself goes to the
 	// task's own server, since the router can only reach this port.
 	if p := task.GetSpec().GetHttp().GetPort(); p > 0 && int(p) != port {
+		s.passThroughPort = int(p)
 		mux.Handle("/", newPassThrough(int(p)))
 		slog.Info("forwarding other requests to the task", "port", p)
 	}
@@ -197,6 +201,20 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if !ready {
 		http.Error(w, "workspace initializing", http.StatusServiceUnavailable)
 		return
+	}
+
+	// With a pass-through, the task isn't ready until its own server accepts
+	// connections. Substrate's wakeup probe polls this endpoint, so a request
+	// that wakes a suspended task is held until the server is up instead of
+	// failing while the command restarts. ?check=workspace is the control
+	// plane asking about workspace setup only.
+	if s.passThroughPort > 0 && r.URL.Query().Get("check") != "workspace" {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", s.passThroughPort), 500*time.Millisecond)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("task server on port %d not listening yet", s.passThroughPort), http.StatusServiceUnavailable)
+			return
+		}
+		_ = conn.Close()
 	}
 
 	w.WriteHeader(http.StatusOK)
