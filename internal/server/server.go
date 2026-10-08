@@ -370,6 +370,112 @@ func (s *Server) recordFailure(ctx context.Context, task *v1alpha1.Task, action 
 	return status.Errorf(code, "%s task on substrate: %v", action, err)
 }
 
+// IdleChecker is implemented by reconcilers that suspend tasks automatically
+// (spec.idle, spec.onCompletion). CheckIdle returns the task and whether its
+// status changed.
+type IdleChecker interface {
+	CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v1alpha1.Task, bool, error)
+}
+
+const (
+	// idleListPage is how many tasks a pass reads from the store at a time.
+	idleListPage = 500
+	// idleLockTimeout is how long a pass waits for a task's lock before
+	// leaving the task to the next pass.
+	idleLockTimeout = 2 * time.Second
+	// idleCheckTimeout bounds the checks for one task.
+	idleCheckTimeout = 30 * time.Second
+)
+
+// RunIdleSuspender calls SuspendIdleTasks every interval until ctx is done.
+// It does nothing when interval is not positive or the reconciler can't
+// suspend tasks automatically.
+func (s *Server) RunIdleSuspender(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	slog.Info("suspending idle tasks automatically", "interval", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.SuspendIdleTasks(ctx)
+		}
+	}
+}
+
+// SuspendIdleTasks makes one pass over the tasks that ask to be suspended
+// automatically, suspending those that are idle or finished and recording
+// state changes Agent Substrate made on its own (a router resuming a task for
+// a request). Each task is checked under its lock and re-read first, so a
+// pass never overwrites a concurrent suspend, resume or delete.
+func (s *Server) SuspendIdleTasks(ctx context.Context) {
+	checker := s.reconciler
+	seen := make(map[string]bool)
+	for offset := int64(0); ; offset += idleListPage {
+		tasks, err := s.listTasks(ctx, "", idleListPage, offset)
+		if err != nil {
+			slog.Warn("idle check: listing tasks failed", "error", err)
+			return
+		}
+		for _, t := range tasks {
+			key := t.GetMetadata().GetAtespace() + "/" + t.GetMetadata().GetName()
+			if seen[key] || !idleCandidate(t) {
+				continue
+			}
+			seen[key] = true
+			s.checkIdleTask(ctx, checker, t.GetMetadata().GetAtespace(), t.GetMetadata().GetName())
+		}
+		if len(tasks) < idleListPage {
+			return
+		}
+	}
+}
+
+// idleCandidate reports whether a task is one SuspendIdleTasks looks at.
+func idleCandidate(t *v1alpha1.Task) bool {
+	if !t.GetSpec().AutoSuspends() {
+		return false
+	}
+	// The store keeps only AX's own phases (Pending, Failed, Terminating);
+	// whether the actor is running or suspended is read from Substrate.
+	return !v1alpha1.IsAXPhase(t.GetStatus().GetPhase())
+}
+
+func (s *Server) checkIdleTask(ctx context.Context, checker IdleChecker, atespace, name string) {
+	if atespace == "" {
+		atespace = "default"
+	}
+	lockCtx, cancelLock := context.WithTimeout(ctx, idleLockTimeout)
+	unlock, err := s.locker.Lock(lockCtx, "task", atespace, name)
+	cancelLock()
+	if err != nil {
+		// Someone else is working on the task; try again next pass.
+		return
+	}
+	defer unlock()
+
+	task, err := s.getTask(ctx, atespace, name)
+	if err != nil || !idleCandidate(task) {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, idleCheckTimeout)
+	defer cancel()
+	updated, changed, err := checker.CheckIdle(cctx, task)
+	if err != nil {
+		slog.Warn("idle check failed", "task", atespace+"/"+name, "error", err)
+	}
+	if !changed {
+		return
+	}
+	if err := s.updateTask(cctx, atespace, name, updated.GetStatus()); err != nil {
+		slog.Error("idle check: recording task status failed", "task", atespace+"/"+name, "error", err)
+	}
+}
+
 // Task storage and Substrate.
 //
 // A task's actor on Agent Substrate is the source of truth for whether the task

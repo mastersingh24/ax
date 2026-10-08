@@ -180,10 +180,7 @@ func TestCheckIdle_SuspendsIdleTask(t *testing.T) {
 	if len(h.mock.suspendedActors) != 1 || h.mock.suspendedActors[0] != "idler" {
 		t.Errorf("suspended actors = %v, want [idler]", h.mock.suspendedActors)
 	}
-	if got.Status.Phase != "Suspended" || got.Status.WorkerIp != "" {
-		t.Errorf("status = %+v, want Suspended with no worker", got.Status)
-	}
-	assertCondition(t, got, "Ready", "False", controller.ReasonIdleSuspended)
+	assertCondition(t, got, controller.ConditionAutoSuspended, "True", controller.ReasonIdleSuspended)
 }
 
 func TestCheckIdle_SuspendsOnCompletion(t *testing.T) {
@@ -202,13 +199,13 @@ func TestCheckIdle_SuspendsOnCompletion(t *testing.T) {
 	// No waiting period: the command is done.
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{Exited: true, ExitCode: 7} })
 	got, changed := h.check(t, task)
-	if !changed || got.Status.Phase != "Suspended" {
+	if !changed || len(h.mock.suspendedActors) != 1 {
 		t.Fatalf("finished task was not suspended: %+v", got.Status)
 	}
-	assertCondition(t, got, "Ready", "False", controller.ReasonCompletedSuspended)
+	assertCondition(t, got, controller.ConditionAutoSuspended, "True", controller.ReasonCompletedSuspended)
 	for _, c := range got.Status.Conditions {
-		if c.Type == "Ready" && !strings.Contains(c.Message, "code 7") {
-			t.Errorf("Ready message should carry the exit code: %q", c.Message)
+		if c.Type == controller.ConditionAutoSuspended && !strings.Contains(c.Message, "code 7") {
+			t.Errorf("AutoSuspended message should carry the exit code: %q", c.Message)
 		}
 	}
 }
@@ -243,26 +240,27 @@ func TestCheckIdle_RecordsResumeByRequest(t *testing.T) {
 	h := newIdleHarness(t)
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{InFlight: 1} })
 
-	// The router woke the actor for a request; ax still says Suspended.
-	got, changed := h.check(t, idleTask("woken", "Suspended"))
-	if !changed || got.Status.Phase != "Running" || got.Status.WorkerIp != h.workerIP {
-		t.Fatalf("resume by request not recorded: changed=%v status=%+v", changed, got.Status)
+	// AX suspended the task earlier; the router has since woken it for a request.
+	task := idleTask("woken", "")
+	task.Status.Conditions = []*v1alpha1.Condition{{Type: controller.ConditionAutoSuspended, Status: "True", Reason: controller.ReasonIdleSuspended}}
+	got, changed := h.check(t, task)
+	if !changed {
+		t.Fatalf("resume by request not recorded: status=%+v", got.Status)
 	}
-	assertCondition(t, got, "Ready", "True", controller.ReasonResumedByRequest)
+	assertCondition(t, got, controller.ConditionAutoSuspended, "False", controller.ReasonResumedByRequest)
 	if len(h.mock.suspendedActors) != 0 {
 		t.Error("suspended a task serving a request")
 	}
 }
 
-func TestCheckIdle_RecordsSuspendOutsideAX(t *testing.T) {
+func TestCheckIdle_SuspendOutsideAXChangesNothingStored(t *testing.T) {
 	h := newIdleHarness(t)
 	h.set(func(h *idleHarness) { h.actorState = ateapipb.ActorState_ACTOR_STATE_SUSPENDED })
 
-	got, changed := h.check(t, idleTask("frozen", "Running"))
-	if !changed || got.Status.Phase != "Suspended" || got.Status.WorkerIp != "" {
-		t.Fatalf("suspend outside AX not recorded: changed=%v status=%+v", changed, got.Status)
+	// The phase is read from the actor, so there is nothing to record.
+	if _, changed := h.check(t, idleTask("frozen", "")); changed {
+		t.Fatal("stored status changed for a task suspended outside AX")
 	}
-	assertCondition(t, got, "Ready", "False", controller.ReasonActorSuspended)
 	if h.statusCalls.Load() != 0 {
 		t.Error("runner polled for a suspended actor")
 	}
@@ -308,7 +306,7 @@ func TestCheckIdle_FallsBackToRouter(t *testing.T) {
 	task.Spec.OnCompletion = v1alpha1.OnCompletionSuspend
 
 	got, changed := h.check(t, task)
-	if !changed || got.Status.Phase != "Suspended" {
+	if !changed || len(h.mock.suspendedActors) != 1 {
 		t.Fatalf("status through the router was not used: %+v", got.Status)
 	}
 	h.mu.Lock()
