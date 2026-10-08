@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/ax/internal/model"
@@ -71,6 +72,20 @@ type TaskReconciler struct {
 	// WorkspaceReadyTimeout bounds how long Reconcile waits for the actor's workspace
 	// to report ready before recording it as still initializing.
 	WorkspaceReadyTimeout time.Duration
+
+	// RouterAddr is Agent Substrate's router, used to reach a runner whose
+	// worker address can't be dialed directly. It defaults to
+	// ATENET_ROUTER_ADDR.
+	RouterAddr string
+
+	// Now is the clock CheckIdle uses; tests replace it.
+	Now func() time.Time
+
+	statusClient *http.Client
+	// runningSince is when CheckIdle or a resume first saw each task's actor
+	// running without a break, keyed by atespace/name.
+	runningMu    sync.Mutex
+	runningSince map[string]time.Time
 }
 
 // NewTaskReconciler creates a new TaskReconciler.
@@ -88,6 +103,10 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		defaultTemplateAtespace: defaultTemplateAtespace,
 		SecretResolver:          model.GetKubernetesSecret,
 		WorkspaceReadyTimeout:   defaultWorkspaceReadyTimeout,
+		RouterAddr:              os.Getenv("ATENET_ROUTER_ADDR"),
+		statusClient:            &http.Client{Timeout: runnerStatusTimeout},
+		Now:                     time.Now,
+		runningSince:            make(map[string]time.Time),
 	}
 }
 
@@ -161,8 +180,16 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	// The runner never needs egress rules (the control plane applies them as
 	// a Substrate egress policy), and runners built before the field existed
 	// reject Task YAML that contains it.
+	// The same goes for the automatic suspension settings, which the control
+	// plane applies; the runner only needs spec.idle.busyPath.
 	if launchTask.Spec != nil {
 		launchTask.Spec.Egress = nil
+		launchTask.Spec.OnCompletion = ""
+		if busyPath := launchTask.Spec.GetIdle().GetBusyPath(); busyPath != "" {
+			launchTask.Spec.Idle = &v1alpha1.TaskIdle{BusyPath: busyPath}
+		} else {
+			launchTask.Spec.Idle = nil
+		}
 	}
 	if taskYAML, err := yaml.Marshal(launchTask); err == nil {
 		extraEnv["AX_TASK_YAML"] = string(taskYAML)
@@ -210,6 +237,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		if err := r.client.SuspendActor(ctx, atespace, actorName); err != nil {
 			slog.Warn("could not suspend actor on Substrate", "error", err)
 		}
+		r.forgetRunning(atespace + "/" + actorName)
 		task.Status.WorkerIp = ""
 		task.Status.Phase = "Suspended"
 		r.setCondition(task, condReady, "False", "TaskSuspended", "Task is suspended", now)
@@ -228,6 +256,8 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 
 	task.Status.WorkerIp = workerIP
 	task.Status.Phase = "Running"
+	// An explicit resume restarts the idle clock CheckIdle uses.
+	r.resetRunning(atespace+"/"+actorName, now)
 
 	// Check if workspace setup inside the actor has completed
 	host := workerIP
