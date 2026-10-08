@@ -370,7 +370,71 @@ func ValidateTask(t *Task) error {
 			return fmt.Errorf("spec.http.port: %d is the runner's own port", port)
 		}
 	}
+	if idle := spec.GetIdle(); idle != nil {
+		if idle.GetSuspendAfter() == "" {
+			return errors.New("spec.idle.suspendAfter: is required")
+		}
+		d, err := time.ParseDuration(idle.GetSuspendAfter())
+		if err != nil {
+			return fmt.Errorf("spec.idle.suspendAfter: invalid duration %q: %w", idle.GetSuspendAfter(), err)
+		}
+		if d < MinIdleSuspendAfter {
+			return fmt.Errorf("spec.idle.suspendAfter: %s is shorter than the minimum of %s", d, MinIdleSuspendAfter)
+		}
+		// Traffic is only visible to the runner when it forwards it.
+		if spec.GetHttp().GetPort() == 0 {
+			return errors.New("spec.idle: requires spec.http.port, since idleness is measured on requests the runner forwards to the task")
+		}
+		if p := idle.GetBusyPath(); p != "" && !strings.HasPrefix(p, "/") {
+			return fmt.Errorf("spec.idle.busyPath: %q must start with /", p)
+		}
+	}
+	switch spec.GetOnCompletion() {
+	case "", OnCompletionKeep, OnCompletionSuspend:
+	default:
+		return fmt.Errorf("spec.onCompletion: %q must be %q or %q", spec.GetOnCompletion(), OnCompletionKeep, OnCompletionSuspend)
+	}
 	return nil
+}
+
+// Automatic suspension.
+
+const (
+	// OnCompletionKeep leaves a task running after its command exits. It is
+	// the default.
+	OnCompletionKeep = "Keep"
+	// OnCompletionSuspend suspends a task once its command has exited.
+	OnCompletionSuspend = "Suspend"
+
+	// MinIdleSuspendAfter is the shortest spec.idle.suspendAfter allowed.
+	// Shorter values would suspend tasks between the requests of a single
+	// conversation.
+	MinIdleSuspendAfter = 10 * time.Second
+)
+
+// IdleSuspendAfter returns how long the task may be idle before it is
+// suspended, or zero when it has no idle policy or the value doesn't parse.
+func (s *TaskSpec) IdleSuspendAfter() time.Duration {
+	if s.GetIdle().GetSuspendAfter() == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s.GetIdle().GetSuspendAfter())
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// SuspendOnCompletion reports whether the task is suspended once its command
+// exits.
+func (s *TaskSpec) SuspendOnCompletion() bool {
+	return s.GetOnCompletion() == OnCompletionSuspend
+}
+
+// AutoSuspends reports whether the control plane suspends the task on its own,
+// either when it is idle or when its command exits.
+func (s *TaskSpec) AutoSuspends() bool {
+	return s.IdleSuspendAfter() > 0 || s.SuspendOnCompletion()
 }
 
 // RunnerPort is the port the task runner serves on and Agent Substrate's
