@@ -116,7 +116,7 @@ message TaskIdle {
 // TaskHTTP configures the runner's pass-through to a server inside the task.
 message TaskHTTP {
   // port is the local port the task's server listens on. Requests for paths
-  // the runner serves itself (/healthz, /readyz) are not
+  // the runner serves itself (/healthz, /readyz, /metadata/v1alpha1/ax/status) are not
   // forwarded.
   int32 port = 1;
 }
