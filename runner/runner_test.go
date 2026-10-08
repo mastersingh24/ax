@@ -16,6 +16,7 @@ package runner_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/ax/internal/metadata"
 	"github.com/google/ax/internal/workspace"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"github.com/google/ax/runner"
@@ -87,6 +89,28 @@ func TestRun_KeepsServingAfterCommandExits(t *testing.T) {
 	case <-h.finished:
 		t.Fatalf("Run returned before cancellation: %v", h.err)
 	default:
+	}
+}
+
+func TestRun_StatusReportsCommandExit(t *testing.T) {
+	h := newHarness(t)
+	h.task.Spec.Command = []string{"sh", "-c", "exit 4"}
+	h.task.Spec.OnCompletion = v1alpha1.OnCompletionSuspend
+
+	h.runUntilCommandExits(t)
+
+	// The exit is recorded before the hook runs, so it is visible right away.
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", h.cfg.Port, metadata.StatusPath))
+	if err != nil {
+		t.Fatalf("status endpoint not reachable: %v", err)
+	}
+	defer resp.Body.Close()
+	var st metadata.RunnerStatus
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Exited || st.ExitCode != 4 {
+		t.Errorf("status = %+v, want exited with code 4", st)
 	}
 }
 
