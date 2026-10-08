@@ -57,6 +57,7 @@ type mockControlServer struct {
 	// for Substrate rejecting a template (for example an invalid quantity).
 	createTemplateErr error
 	egressPolicies    map[string]*ateapipb.EgressPolicy
+	lastTemplate      *ateapipb.ActorTemplate
 }
 
 func (m *mockControlServer) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
@@ -87,6 +88,7 @@ func (m *mockControlServer) CreateActorTemplate(_ context.Context, req *ateapipb
 		m.actorTemplates = make(map[string]bool)
 	}
 	tmpl := req.GetActorTemplate()
+	m.lastTemplate = tmpl
 	m.actorTemplates[tmpl.GetMetadata().GetName()] = true
 	m.createdTemplates = append(m.createdTemplates, tmpl)
 	for _, c := range tmpl.GetContainers() {
