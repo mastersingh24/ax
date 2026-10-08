@@ -374,7 +374,7 @@ func (x *TaskIdle) GetBusyPath() string {
 type TaskHTTP struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// port is the local port the task's server listens on. Requests for paths
-	// the runner serves itself (/healthz, /readyz) are not
+	// the runner serves itself (/healthz, /readyz, /metadata/v1alpha1/ax/status) are not
 	// forwarded.
 	Port          int32 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
 	unknownFields protoimpl.UnknownFields
