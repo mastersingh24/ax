@@ -26,6 +26,7 @@ Your agent can introspect its own configuration without any SDK. The metadata en
 |---|---|---|---|
 | `/metadata/v1alpha1/ax/task` | `GET` | `application/yaml` | Task launch configuration, excluding status. |
 | `/metadata/v1alpha1/ax/workspaces` | `GET` | `application/yaml` | Every bound `Workspace`, as a multi-document stream in binding order. |
+| `/metadata/v1alpha1/ax/status` | `GET` | `application/json` | Seconds since the last forwarded request, open requests, the task's busy answer, and whether the command has exited. AX reads it to [suspend idle or finished tasks](idle-suspend.md). |
 
 ```bash
 # From inside a task:
