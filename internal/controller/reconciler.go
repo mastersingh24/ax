@@ -505,6 +505,7 @@ func (r *TaskReconciler) Delete(ctx context.Context, atespace, taskName string) 
 		atespace = "default"
 	}
 	slog.Info("deleting Substrate actor for task", "atespace", atespace, "task", taskName)
+	r.forgetRunning(atespace + "/" + taskName)
 	if err := r.client.DeleteActor(ctx, atespace, taskName); err != nil {
 		return err
 	}
