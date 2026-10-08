@@ -145,6 +145,9 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 		r.setCondition(task, condReady, "True", ReasonResumedByRequest, "Agent Substrate resumed the task to deliver a request", now)
 		changed = true
 		slog.Info("task was resumed by a request", "task", key)
+	} else if workerIP != "" && task.Status.WorkerIp != workerIP {
+		task.Status.WorkerIp = workerIP
+		changed = true
 	}
 
 	st, err := r.runnerStatus(ctx, atespace, name, workerIP)

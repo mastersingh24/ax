@@ -156,20 +156,20 @@ func TestCheckIdle_SuspendsIdleTask(t *testing.T) {
 	// just seen the actor running: it might have been restored from an old
 	// snapshot a moment ago.
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{IdleSeconds: 3600} })
-	if _, changed := h.check(t, task); changed || len(h.mock.suspendedActors) != 0 {
-		t.Fatalf("suspended a task first seen running just now (changed=%v)", changed)
+	if got, _ := h.check(t, task); got.Status.Phase != "Running" || len(h.mock.suspendedActors) != 0 {
+		t.Fatal("suspended a task first seen running just now")
 	}
 
 	// A busy agent is left alone however long it has been quiet.
 	h.advance(15 * time.Minute)
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{IdleSeconds: 4500, Busy: true} })
-	if _, changed := h.check(t, task); changed || len(h.mock.suspendedActors) != 0 {
+	if got, _ := h.check(t, task); got.Status.Phase != "Running" || len(h.mock.suspendedActors) != 0 {
 		t.Fatal("suspended a busy task")
 	}
 
 	// So is one with a request open.
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{InFlight: 1} })
-	if _, changed := h.check(t, task); changed || len(h.mock.suspendedActors) != 0 {
+	if got, _ := h.check(t, task); got.Status.Phase != "Running" || len(h.mock.suspendedActors) != 0 {
 		t.Fatal("suspended a task with a request in flight")
 	}
 
@@ -196,7 +196,7 @@ func TestCheckIdle_SuspendsOnCompletion(t *testing.T) {
 	}
 
 	h.set(func(h *idleHarness) { h.status = metadata.RunnerStatus{IdleSeconds: 3600} })
-	if _, changed := h.check(t, task); changed {
+	if got, _ := h.check(t, task); got.Status.Phase != "Running" || len(h.mock.suspendedActors) != 0 {
 		t.Fatal("suspended a task whose command is still running")
 	}
 
@@ -292,7 +292,7 @@ func TestCheckIdle_OldRunnerWithoutStatus(t *testing.T) {
 	task := idleTask("old-runner", "Running")
 	h.check(t, task)
 	h.advance(time.Hour)
-	if _, changed := h.check(t, task); changed || len(h.mock.suspendedActors) != 0 {
+	if got, _ := h.check(t, task); got.Status.Phase != "Running" || len(h.mock.suspendedActors) != 0 {
 		t.Fatal("suspended a task whose runner reports no status")
 	}
 }
