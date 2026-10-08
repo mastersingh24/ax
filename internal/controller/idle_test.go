@@ -319,6 +319,32 @@ func TestCheckIdle_FallsBackToRouter(t *testing.T) {
 	}
 }
 
+// A worker address that swallows the request instead of refusing it (network
+// policy dropping traffic to worker pods) must not use up the router
+// fallback's time as well.
+func TestCheckIdle_FallsBackToRouterWhenWorkerHangs(t *testing.T) {
+	hang, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hang.Close() // never accepted: requests to it just wait
+
+	h := newIdleHarness(t)
+	routerAddr := h.workerIP
+	h.reconciler.RouterAddr = routerAddr
+	h.set(func(h *idleHarness) {
+		h.workerIP = hang.Addr().String()
+		h.status = metadata.RunnerStatus{Exited: true}
+	})
+	task := idleTask("hanging-worker", "Running")
+	task.Spec.OnCompletion = v1alpha1.OnCompletionSuspend
+
+	got, changed := h.check(t, task)
+	if !changed || got.Status.Phase != "Suspended" {
+		t.Fatalf("router fallback was not reached after a hanging worker read: %+v", got.Status)
+	}
+}
+
 func TestTaskReconciler_PassesOnlyBusyPathToRunner(t *testing.T) {
 	h := newIdleHarness(t)
 	task := idleTask("launch", "Suspended")
