@@ -35,6 +35,22 @@ spec:
   debug: true   # serve guest services inside the sandbox so `ax ssh` works; off by default
 ```
 
+### Suspending automatically
+
+A task that serves requests through `spec.http.port` can give its worker back between them, and any task can be suspended once its command exits:
+
+```yaml
+spec:
+  http:
+    port: 8484
+  idle:
+    suspendAfter: 10m   # no request for ten minutes...
+    busyPath: /busy     # ...and the agent doesn't answer {"busy": true}
+  onCompletion: Suspend # Keep (the default) leaves a finished task running
+```
+
+The next request through Agent Substrate's router resumes the task. See [Automatic suspension](idle-suspend.md).
+
 ### Binding several workspaces
 
 `spec.workspaces` takes as many entries as you like, so a task can compose reusable `Workspace` resources, for example the code to work on plus a shared set of tools:
