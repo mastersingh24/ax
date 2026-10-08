@@ -85,22 +85,26 @@ func decideIdle(spec *v1alpha1.TaskSpec, st metadata.RunnerStatus, runningFor ti
 	}
 }
 
+// ConditionAutoSuspended records that AX suspended the task on its own
+// (spec.idle, spec.onCompletion). Unlike Ready, which is derived from the
+// actor on every read, AX owns this condition, so the store keeps it. It turns
+// False with ReasonResumedByRequest once the actor is seen running again.
+const ConditionAutoSuspended = "AutoSuspended"
+
 // CheckIdle suspends the task if its spec.idle or spec.onCompletion policy
-// says so, and brings the recorded phase in line with the actor's real state.
-// It returns the task and whether its status changed.
+// says so. It returns the task and whether its stored status changed.
 //
 // The actor's state comes from the Substrate control API, which never wakes
 // an actor. The runner is only asked for its status when the actor is
-// running, so a suspended task stays suspended. A task recorded as Suspended
-// whose actor is running was resumed by Agent Substrate's router for an
-// incoming request, and is recorded as Running again.
+// running, so a suspended task stays suspended. Phase, worker address and
+// Ready are not recorded here: they are read from the actor whenever the task
+// is read.
 func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v1alpha1.Task, bool, error) {
 	spec := task.GetSpec()
 	if !spec.AutoSuspends() || task.GetMetadata() == nil {
 		return task, false, nil
 	}
-	phase := task.GetStatus().GetPhase()
-	if phase != "Running" && phase != "Suspended" {
+	if v1alpha1.IsAXPhase(task.GetStatus().GetPhase()) {
 		return task, false, nil
 	}
 	if task.Status == nil {
@@ -123,13 +127,7 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 	case ateapipb.ActorState_ACTOR_STATE_RUNNING:
 	case ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ateapipb.ActorState_ACTOR_STATE_SUSPENDING:
 		r.forgetRunning(key)
-		if phase != "Running" {
-			return task, false, nil
-		}
-		task.Status.Phase = "Suspended"
-		task.Status.WorkerIp = ""
-		setCondition(task, v1alpha1.ConditionReady, "False", ReasonActorSuspended, "The task's actor was suspended outside AX", now)
-		return task, true, nil
+		return task, false, nil
 	default:
 		// Resuming, crashed, deleting and so on: leave it to the next pass or
 		// to an explicit reconcile.
@@ -139,10 +137,8 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 	since := r.markRunning(key, now)
 	workerIP := firstWorkerIP(actor)
 	changed := false
-	if phase == "Suspended" {
-		task.Status.Phase = "Running"
-		task.Status.WorkerIp = workerIP
-		setCondition(task, v1alpha1.ConditionReady, "True", ReasonResumedByRequest, "Agent Substrate resumed the task to deliver a request", now)
+	if conditionTrue(task, ConditionAutoSuspended) {
+		setCondition(task, ConditionAutoSuspended, "False", ReasonResumedByRequest, "Agent Substrate resumed the task to deliver a request", now)
 		changed = true
 		slog.Info("task was resumed by a request", "task", key)
 	}
@@ -164,9 +160,7 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 		return task, changed, fmt.Errorf("suspending actor %s: %w", key, err)
 	}
 	r.forgetRunning(key)
-	task.Status.Phase = "Suspended"
-	task.Status.WorkerIp = ""
-	setCondition(task, v1alpha1.ConditionReady, "False", d.reason, d.message, now)
+	setCondition(task, ConditionAutoSuspended, "True", d.reason, d.message, now)
 	return task, true, nil
 }
 
