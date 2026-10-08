@@ -1,6 +1,6 @@
 # Automatic suspension
 
-A running task holds a whole Agent Substrate worker, whether it is doing anything or not. Without help, AX only suspends a task right after creating it and when someone calls `ax suspend`, so a request-driven agent that answered its last request an hour ago, or a batch task whose command finished, keeps its worker until a person notices. On a small worker pool that is how tasks end up `Failed` for lack of a place to run.
+A running task is a live sandbox with its memory and CPU on an Agent Substrate worker, whether it is doing anything or not. Substrate packs many actors onto a worker, but only up to the worker's resources. Without help, AX only suspends a task right after creating it and when someone calls `ax suspend`, so a request-driven agent that answered its last request an hour ago, or a batch task whose command finished, keeps using those resources until a person notices. Once tasks declare resource limits, that is also how new tasks end up with nowhere to run.
 
 Agent Substrate's router resumes a suspended task on the next request addressed to it (about two seconds when warm), so for an agent that serves an API, suspending between requests costs one slow request and gives the worker back the rest of the time. Two optional fields let a task ask for that.
 
@@ -38,7 +38,7 @@ Content-Type: application/json
 {"busy": true}
 ```
 
-Only a `200` whose JSON body has `"busy": true` means busy. Any other answer, including `{"busy": false}`, another status code, an unreadable body, a refused connection, or no answer within two seconds, means not busy. The reason is reported, but the task can still be suspended: an agent whose server has died should not hold a worker forever. Keep the handler cheap; it is called on every check of an otherwise idle task.
+Only a `200` whose JSON body has `"busy": true` means busy. Any other answer, including `{"busy": false}`, another status code, an unreadable body, a refused connection, or no answer within two seconds, means not busy. The reason is reported, but the task can still be suspended: an agent whose server has died should not stay running forever. Keep the handler cheap; it is called on every check of an otherwise idle task.
 
 ## The runner's status endpoint
 
