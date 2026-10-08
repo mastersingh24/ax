@@ -44,6 +44,10 @@ const (
 	// runnerStatusTimeout bounds a status read, which includes the runner's
 	// own call to spec.idle.busyPath.
 	runnerStatusTimeout = 5 * time.Second
+
+	// directStatusTimeout bounds the read straight from the worker pod, which
+	// should answer in milliseconds when it is reachable at all.
+	directStatusTimeout = 1 * time.Second
 	runnerBodyLimit     = 64 << 10
 )
 
@@ -154,7 +158,7 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 	if err != nil {
 		// Runners built before the status endpoint, or one that is still
 		// starting: nothing to decide on.
-		slog.Debug("could not read runner status", "task", key, "error", err)
+		slog.Warn("could not read runner status; idle suspend skipped this pass", "task", key, "error", err)
 		return task, changed, nil
 	}
 
@@ -178,23 +182,28 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 // caller has just seen the actor running, so the router does not have to wake
 // it to answer.
 func (r *TaskReconciler) runnerStatus(ctx context.Context, atespace, name, workerIP string) (metadata.RunnerStatus, error) {
-	ctx, cancel := context.WithTimeout(ctx, runnerStatusTimeout)
-	defer cancel()
-
 	var errs []error
 	if workerIP != "" {
 		host, port := workerIP, "80"
 		if h, p, err := net.SplitHostPort(workerIP); err == nil {
 			host, port = h, p
 		}
-		st, err := r.getRunnerStatus(ctx, fmt.Sprintf("http://%s%s", net.JoinHostPort(host, port), metadata.StatusPath), "")
+		// Each attempt gets its own deadline. Where network policy drops
+		// traffic to worker pods instead of refusing it, the direct read
+		// hangs, and sharing one deadline left the router fallback with
+		// none.
+		dctx, cancel := context.WithTimeout(ctx, directStatusTimeout)
+		st, err := r.getRunnerStatus(dctx, fmt.Sprintf("http://%s%s", net.JoinHostPort(host, port), metadata.StatusPath), "")
+		cancel()
 		if err == nil {
 			return st, nil
 		}
 		errs = append(errs, err)
 	}
 	if r.RouterAddr != "" {
-		st, err := r.getRunnerStatus(ctx, fmt.Sprintf("http://%s%s", r.RouterAddr, metadata.StatusPath), atespace+"/"+name)
+		rctx, cancel := context.WithTimeout(ctx, runnerStatusTimeout)
+		st, err := r.getRunnerStatus(rctx, fmt.Sprintf("http://%s%s", r.RouterAddr, metadata.StatusPath), atespace+"/"+name)
+		cancel()
 		if err == nil {
 			return st, nil
 		}
