@@ -18,7 +18,9 @@
 // performs the maiden-run workspace setup, and then starts the task's command
 // as a supervised child process. The runner stays up as the container's main
 // process until it is told to stop, so the sandbox remains inspectable after
-// the command has finished. The ax-task-runner binary is a thin wrapper around
+// the command has finished. Whether the command has exited, and how recently
+// the task served a request, are reported on the metadata server's status
+// endpoint so the control plane can suspend finished or idle tasks. The ax-task-runner binary is a thin wrapper around
 // [Run]; custom images can embed the same behavior by calling it directly.
 package runner
 
@@ -151,6 +153,16 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Info("shutting down metadata server")
 		_ = metaServer.Stop(context.Background())
 	}()
+
+	// The status endpoint reports the exit so the control plane can apply
+	// spec.onCompletion. It is recorded before the caller's hook runs.
+	onExit := cfg.OnCommandExit
+	cfg.OnCommandExit = func(e CommandExit) {
+		metaServer.SetCommandExit(e.ExitCode)
+		if onExit != nil {
+			onExit(e)
+		}
+	}
 
 	ready := true
 	for _, m := range mounts {

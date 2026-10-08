@@ -16,6 +16,7 @@ package metadata
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,19 +38,26 @@ type Server struct {
 	port int
 	// passThroughPort is the task server's port when spec.http.port is set.
 	passThroughPort int
-	server          *http.Server
-	grpcServer      *grpc.Server
-	grpcCleanup     func()
-	mu              sync.RWMutex
-	task            *v1alpha1.Task
-	workspaces      []*v1alpha1.Workspace
-	workspaceReady  bool
+	// busyPath is spec.idle.busyPath, asked on passThroughPort.
+	busyPath       string
+	activity       *activity
+	busyClient     *http.Client
+	stopWatch      context.CancelFunc
+	server         *http.Server
+	grpcServer     *grpc.Server
+	grpcCleanup    func()
+	mu             sync.RWMutex
+	task           *v1alpha1.Task
+	workspaces     []*v1alpha1.Workspace
+	workspaceReady bool
 }
 
 // ServerOptions configures optional settings for the metadata and guest server.
 type ServerOptions struct {
 	WorkspacePath string
 	LogDir        string
+	// Now overrides the clock used for idle tracking; tests set it.
+	Now func() time.Time
 }
 
 // NewServer creates a new metadata and guest server serving the task and its
@@ -58,15 +66,17 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 	if port <= 0 {
 		port = 9999
 	}
+	var opt ServerOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	s := &Server{
 		port:       port,
 		task:       task,
 		workspaces: compactWorkspaces(workspaces),
-	}
-
-	var opt ServerOptions
-	if len(opts) > 0 {
-		opt = opts[0]
+		activity:   newActivity(opt.Now),
+		busyClient: &http.Client{},
 	}
 
 	// Guest services expose process execution and file access inside the container,
@@ -101,17 +111,24 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 	// /metadata/v1alpha1/ax/workspaces  every bound Workspace, as a YAML stream
 	mux.HandleFunc("/metadata/v1alpha1/ax/task", s.handleTask)
 	mux.HandleFunc("/metadata/v1alpha1/ax/workspaces", s.handleWorkspaces)
+	// StatusPath reports activity and command state for automatic suspension.
+	mux.HandleFunc(StatusPath, s.handleStatus)
 
 	// spec.http.port: everything the runner doesn't serve itself goes to the
 	// task's own server, since the router can only reach this port.
 	if p := task.GetSpec().GetHttp().GetPort(); p > 0 && int(p) != port {
 		s.passThroughPort = int(p)
-		mux.Handle("/", newPassThrough(int(p)))
+		s.busyPath = task.GetSpec().GetIdle().GetBusyPath()
+		// Only forwarded requests count as activity, never the endpoints above.
+		mux.Handle("/", s.activity.track(newPassThrough(int(p))))
 		slog.Info("forwarding other requests to the task", "port", p)
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.grpcServer != nil && r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			// Guest service calls are someone working in the sandbox (ax ssh).
+			s.activity.begin()
+			defer s.activity.end()
 			s.grpcServer.ServeHTTP(w, r)
 			return
 		}
@@ -138,6 +155,10 @@ func (s *Server) Start() error {
 
 	slog.Info("metadata and guest server started", "addr", s.server.Addr)
 
+	watchCtx, cancel := context.WithCancel(context.Background())
+	s.stopWatch = cancel
+	go s.activity.watchResume(watchCtx, resumeTick, resumeGap)
+
 	go func() {
 		if err := s.server.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("metadata server error", "error", err)
@@ -149,6 +170,9 @@ func (s *Server) Start() error {
 
 // Stop gracefully stops the metadata and guest server.
 func (s *Server) Stop(ctx context.Context) error {
+	if s.stopWatch != nil {
+		s.stopWatch()
+	}
 	if s.grpcCleanup != nil {
 		s.grpcCleanup()
 	}
@@ -186,6 +210,31 @@ func (s *Server) IsWorkspaceReady() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.workspaceReady
+}
+
+// SetCommandExit records that the task command exited with the given code,
+// for StatusPath.
+func (s *Server) SetCommandExit(code int) {
+	s.activity.setExit(code)
+}
+
+// Status returns what StatusPath serves, asking the task whether it is busy
+// when spec.idle.busyPath is set.
+func (s *Server) Status(ctx context.Context) RunnerStatus {
+	st := s.activity.snapshot()
+	if s.busyPath != "" && s.passThroughPort > 0 {
+		busy, err := checkBusy(ctx, s.busyClient, s.passThroughPort, s.busyPath)
+		st.Busy = busy
+		if err != nil {
+			st.BusyError = err.Error()
+		}
+	}
+	return st
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.Status(r.Context()))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
