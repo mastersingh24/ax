@@ -71,6 +71,7 @@ func TestActivity_IdleAndInFlight(t *testing.T) {
 func TestActivity_ResetsIdleClockAfterFreeze(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	a := newActivity(clock.Now)
+	a.wall = nil // only the ticks below show the passage of wall-clock time
 
 	ticks := make(chan time.Time)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,4 +100,68 @@ func TestActivity_ResetsIdleClockAfterFreeze(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// With full snapshots the runner comes back as it was, including a command
+// that had already exited. The status says so, which the control plane uses
+// to avoid suspending a just-woken finished task on the spot.
+func TestActivity_ResumedAfterExit(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	a := newActivity(clock.Now)
+	a.wall = nil
+
+	ticks := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Unix(1000, 0)
+	done := make(chan struct{})
+	go func() {
+		a.resetOnGaps(ctx, ticks, start, 5*time.Second)
+		close(done)
+	}()
+
+	// A freeze before the command exits is an ordinary resume.
+	ticks <- start.Add(time.Hour)
+	ticks <- start.Add(time.Hour + time.Second)
+	a.setExit(0)
+	if st := a.snapshot(); !st.Exited || st.ResumedAfterExit {
+		t.Fatalf("exit after the only resume: %+v", st)
+	}
+
+	ticks <- start.Add(2 * time.Hour)
+	ticks <- start.Add(2*time.Hour + time.Second)
+	if st := a.snapshot(); !st.Exited || !st.ResumedAfterExit {
+		t.Fatalf("resume after the exit not reported: %+v", st)
+	}
+
+	cancel()
+	<-done
+}
+
+// A status read that lands right after a restore, before the watch ticks,
+// must not report the idle time held in the snapshot's memory.
+func TestActivity_StatusDetectsFreezeBeforeTick(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1000, 0)}
+	a := newActivity(clock.Now)
+	wall := &fakeClock{t: time.Unix(1000, 0)}
+	a.wall = wall.Now
+	a.mu.Lock()
+	a.gap = 5 * time.Second
+	a.lastTick = wall.Now()
+	a.mu.Unlock()
+
+	a.setExit(0)
+	clock.Advance(3 * time.Hour)
+	wall.Advance(3 * time.Hour)
+	st := a.snapshot()
+	if st.IdleSeconds != 0 || !st.ResumedAfterExit {
+		t.Fatalf("status right after a restore: %+v", st)
+	}
+
+	// Without a gap, the clock runs on.
+	clock.Advance(4 * time.Second)
+	wall.Advance(4 * time.Second)
+	if st := a.snapshot(); st.IdleSeconds != 4 {
+		t.Fatalf("status 4s later: %+v", st)
+	}
 }

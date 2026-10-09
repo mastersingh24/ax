@@ -49,6 +49,15 @@ func TestDecideIdle(t *testing.T) {
 		{"exited with onCompletion Keep", keep, metadata.RunnerStatus{Exited: true, IdleSeconds: 3600}, long, ""},
 		{"exited, idle policy only, still idles out", idle10m, metadata.RunnerStatus{Exited: true, IdleSeconds: 600}, long, ReasonIdleSuspended},
 		{"no policy", &v1alpha1.TaskSpec{}, metadata.RunnerStatus{Exited: true, IdleSeconds: 3600}, long, ""},
+		// Woken (full snapshot) after the command had exited: suspend again
+		// only once idle, after suspendAfter or completedWakeGrace.
+		{"woken after exit, just resumed", onExit, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true}, time.Minute, ""},
+		{"woken after exit, request open", onExit, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, InFlight: 1}, long, ""},
+		{"woken after exit, idle under grace", onExit, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, IdleSeconds: 299}, long, ""},
+		{"woken after exit, idle for grace", onExit, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, IdleSeconds: 300}, long, ReasonCompletedSuspended},
+		{"woken after exit, stale runner clock", onExit, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, IdleSeconds: 3600}, 4 * time.Minute, ""},
+		{"woken after exit, suspendAfter is the grace", both, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, IdleSeconds: 600}, long, ReasonCompletedSuspended},
+		{"woken after exit, under suspendAfter", both, metadata.RunnerStatus{Exited: true, ResumedAfterExit: true, IdleSeconds: 400}, long, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
