@@ -179,7 +179,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	}
 
 	// Only launch configuration belongs in the template; status changes
-	// must not create new golden snapshots.
+	// must not provision new templates (each one gets its own golden snapshot).
 	launchTask := proto.Clone(task).(*v1alpha1.Task)
 	launchTask.Status = nil
 	// The runner never needs egress rules (the control plane applies them as

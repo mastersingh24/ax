@@ -48,9 +48,9 @@ The runner reports what it knows at `GET /metadata/v1alpha1/ax/status`:
 {"idleSeconds": 412, "inFlight": 0, "busy": false, "exited": false, "exitCode": 0}
 ```
 
-`idleSeconds` is zero while a request is open. `busyError` appears when the busy check failed. `exited` and `exitCode` describe `spec.command`; the exit code is `-1` when the command was killed by a signal.
+`idleSeconds` is zero while a request is open. `busyError` appears when the busy check failed. `exited` and `exitCode` describe `spec.command`; the exit code is `-1` when the command was killed by a signal. `resumedAfterExit` appears, set to `true`, when the task was suspended and woken again after the command exited (see [What a woken task looks like](#what-a-woken-task-looks-like)).
 
-A suspended task resumes from a snapshot, and the runner's memory in that snapshot remembers the last request before the suspend, possibly hours ago. The runner notices that it was frozen (its once-a-second clock tick jumps) and restarts the idle clock. The control plane also never treats a task as idle for longer than it has seen it running, so a task that was just resumed is never suspended straight away.
+With full snapshots (the default, see below) a suspended task resumes with the runner's memory as it was at the suspend, so it remembers the last request before the suspend, possibly hours ago. The runner notices that it was frozen (its once-a-second clock tick jumps, or a status read finds the last tick too far back) and restarts the idle clock. The control plane also never treats a task as idle for longer than it has seen it running, so a task that was just resumed is never suspended straight away. With data-only snapshots the runner starts afresh on resume, so its clock starts at zero anyway.
 
 ## How the control plane applies it
 
@@ -64,10 +64,28 @@ A suspended task resumes from a snapshot, and the runner's memory in that snapsh
 
 The task's `Ready` condition carries the reason. `ax resume`, or simply the next request through the router, brings it back.
 
-On resume Agent Substrate restores the runner from its golden snapshot, so the command starts again. For `onCompletion: Suspend` that means a request that wakes a finished task runs the command once more and the task is suspended again when it exits.
+## What a woken task looks like
 
-A runner image built before this change has no status endpoint. The control plane then makes no decision for that task, so upgrading `ax-server` first is safe.
+What a task looks like when it wakes depends on what its snapshots capture. `ax-server` sets that on every ActorTemplate it creates with `--snapshot-scope` (or `AX_SNAPSHOT_SCOPE`); see [Agent Substrate v0.4](substrate-v0.4.md) for the Substrate side.
+
+| | `full` (default) | `data` |
+|---|---|---|
+| Snapshot holds | process memory, root filesystem, durable directories (`/workspace`) | durable directories only |
+| On wake | the task carries on where it was: same processes, same memory, files outside `/workspace` kept | the containers start afresh from the image with `/workspace` restored: the runner and `spec.command` start again |
+| Snapshot size, suspend and wake time | larger and slower, growing with the task's memory and filesystem changes | small and quick to save; wake pays the app's startup |
+| Good for | agents that keep state in memory (a conversation, a loaded model, a warm cache) | agents that keep everything they need in `/workspace` and start quickly |
+
+The scope is fixed when a task's template is created, so changing the flag affects tasks created afterwards; existing tasks keep the scope they started with.
+
+The two differ for `onCompletion: Suspend`:
+
+- With `full`, the command is not run again. A request or `ax resume` that wakes a finished task finds it as it was when the command exited, which is what you want for looking at results or `ax ssh`. The runner reports `resumedAfterExit`, and instead of suspending the task on the spot the control plane waits until it has gone `spec.idle.suspendAfter` (five minutes when that is not set) without a request, then suspends it again with reason `CompletedSuspended`. To run the command again, create the task again.
+- With `data`, the runner starts afresh, so the command runs once more and the task is suspended again when it exits.
+
+Agent Substrate v0.3 restored data-only snapshots on top of the template's golden snapshot. v0.4 removed that mode (`onResume.fromData: GOLDEN`); `data` now always restarts from the image.
+
+A runner image built before this change has no status endpoint. The control plane then makes no decision for that task, so upgrading `ax-server` first is safe. A runner built before `resumedAfterExit` never reports it, so with full snapshots a finished `onCompletion: Suspend` task it runs is suspended again at the first check after it is woken; use a current runner image with `full`.
 
 ## Relation to Agent Substrate's worker-initiated suspend
 
-Agent Substrate v0.3.0 has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.
+Agent Substrate (v0.3.0 and v0.4.0) has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.

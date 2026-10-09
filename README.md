@@ -116,6 +116,7 @@ Want to see the whole lifecycle end to end? Run [`./demo.sh`](demo.sh). It appli
 | [Runners](docs/runner.md) | Understand the contract between the control plane and the task container, and build your own runner image to replace the default. |
 | [Networking](docs/networking.md) | Reach a running task through the atenet router from the cluster, your laptop, or a gRPC client. |
 | [Automatic suspension](docs/idle-suspend.md) | Have AX suspend a task when it goes idle or its command exits, and let the next request resume it. |
+| [Agent Substrate v0.4](docs/substrate-v0.4.md) | What changed with Substrate v0.4, the snapshot scope setting, and upgrading a cluster with existing tasks. |
 | [Architecture](DESIGN.md) | Understand how the control plane fits together, plus the [API reference](DESIGN.md#api-reference). |
 | [Development](docs/development.md) | Build, test, and ship changes to AX itself. |
 | [Roadmap](docs/roadmap.md) | See planned milestones across core specs, actor architecture, agentic environments, and governance. |
