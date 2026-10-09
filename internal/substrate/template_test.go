@@ -20,9 +20,11 @@ import (
 	"testing"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/google/ax/pkg/apis/v1alpha1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func envValue(c *ateapipb.Container, name string) (string, bool) {
@@ -36,7 +38,7 @@ func envValue(c *ateapipb.Container, name string) (string, bool) {
 
 func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "true")
-	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, "gs://b/", "")
+	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, "gs://b/", nil, "")
 
 	var found bool
 	for _, v := range tmpl.GetVolumes() {
@@ -77,7 +79,7 @@ func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 
 func TestBuildActorTemplate_NoTrustBundleByDefault(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "")
-	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", "")
+	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", nil, "")
 	if got := len(tmpl.GetVolumes()); got != 1 {
 		t.Errorf("expected only the workspace volume, got %d", got)
 	}
@@ -95,7 +97,7 @@ func TestBuildActorTemplate_SnapshotScope(t *testing.T) {
 		{SnapshotScopeFull, ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL},
 		{SnapshotScopeData, ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA},
 	} {
-		cfg := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", tc.scope).GetSnapshotConfig()
+		cfg := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", nil, tc.scope).GetSnapshotConfig()
 		if cfg.GetOnCommit() != tc.want {
 			t.Errorf("scope %q: onCommit = %v, want %v", tc.scope, cfg.GetOnCommit(), tc.want)
 		}
@@ -144,11 +146,15 @@ func TestEnsureActorTemplateWithImage_UsesClientScope(t *testing.T) {
 	} {
 		rec := &templateRecorder{}
 		c := &Client{control: rec, snapshotScope: tc.scope}
-		if _, err := c.EnsureActorTemplateWithImage(context.Background(), "ax-system", "base", "default", "t", "img"); err != nil {
+		limits := &ateapipb.Resources{Limits: []*ateapipb.Limits{{Name: "cpu", Quantity: "2"}}}
+		if _, err := c.EnsureActorTemplateWithImage(context.Background(), "ax-system", "base", "default", "t", "img", limits); err != nil {
 			t.Fatal(err)
 		}
 		if got := rec.created.GetSnapshotConfig().GetOnCommit(); got != tc.want {
 			t.Errorf("client scope %q: onCommit = %v, want %v", tc.scope, got, tc.want)
+		}
+		if !proto.Equal(rec.created.GetResources(), limits) {
+			t.Errorf("resources = %v, want %v", rec.created.GetResources(), limits)
 		}
 	}
 }
@@ -172,5 +178,63 @@ func TestWorkerIP(t *testing.T) {
 		if got := WorkerIP(tc.actor); got != tc.want {
 			t.Errorf("WorkerIP(%v) = %q, want %q", tc.actor, got, tc.want)
 		}
+	}
+}
+
+func TestResourceLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		reqs *v1alpha1.ResourceReqs
+		want *ateapipb.Resources
+	}{
+		{name: "nil"},
+		{name: "empty", reqs: &v1alpha1.ResourceReqs{}},
+		{name: "empty limits", reqs: &v1alpha1.ResourceReqs{Limits: &v1alpha1.ResourceList{}}},
+		{
+			name: "cpu limit",
+			reqs: &v1alpha1.ResourceReqs{Limits: &v1alpha1.ResourceList{Cpu: "2"}},
+			want: &ateapipb.Resources{Limits: []*ateapipb.Limits{{Name: "cpu", Quantity: "2"}}},
+		},
+		{
+			name: "memory limit",
+			reqs: &v1alpha1.ResourceReqs{Limits: &v1alpha1.ResourceList{Memory: "4Gi"}},
+			want: &ateapipb.Resources{Limits: []*ateapipb.Limits{{Name: "memory", Quantity: "4Gi"}}},
+		},
+		{
+			name: "cpu and memory limits",
+			reqs: &v1alpha1.ResourceReqs{
+				Limits: &v1alpha1.ResourceList{Cpu: "2", Memory: "4Gi"},
+			},
+			want: &ateapipb.Resources{Limits: []*ateapipb.Limits{
+				{Name: "cpu", Quantity: "2"},
+				{Name: "memory", Quantity: "4Gi"},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResourceLimits(tt.reqs)
+			if !proto.Equal(got, tt.want) {
+				t.Fatalf("ResourceLimits() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildActorTemplate_Resources(t *testing.T) {
+	limits := &ateapipb.Resources{Limits: []*ateapipb.Limits{
+		{Name: "cpu", Quantity: "2"},
+		{Name: "memory", Quantity: "4Gi"},
+	}}
+	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits, "")
+	if !proto.Equal(tmpl.GetResources(), limits) {
+		t.Fatalf("template resources = %v, want %v", tmpl.GetResources(), limits)
+	}
+
+	// Without limits the template must not carry a resources block, so the
+	// worker defaults keep applying.
+	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil, "")
+	if tmpl.GetResources() != nil {
+		t.Fatalf("template without limits has resources %v, want none", tmpl.GetResources())
 	}
 }

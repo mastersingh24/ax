@@ -394,7 +394,7 @@ func ValidateTask(t *Task) error {
 	default:
 		return fmt.Errorf("spec.onCompletion: %q must be %q or %q", spec.GetOnCompletion(), OnCompletionKeep, OnCompletionSuspend)
 	}
-	return nil
+	return ValidateResources(spec.GetResources())
 }
 
 // Automatic suspension.

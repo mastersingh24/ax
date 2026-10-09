@@ -286,9 +286,29 @@ var egressTrustEnv = map[string]string{
 	"NODE_EXTRA_CA_CERTS": egressTrustBundleFile,
 }
 
+// ResourceLimits translates a Task's resource limits into the Substrate
+// ActorTemplate resources block. Substrate sizes a sandbox by limits alone
+// (requests are rejected by v1alpha1.ValidateResources). It returns nil when no
+// limit is set so the template inherits the worker defaults.
+func ResourceLimits(reqs *v1alpha1.ResourceReqs) *ateapipb.Resources {
+	limits := reqs.GetLimits()
+	var out []*ateapipb.Limits
+	if cpu := limits.GetCpu(); cpu != "" {
+		out = append(out, &ateapipb.Limits{Name: "cpu", Quantity: cpu})
+	}
+	if memory := limits.GetMemory(); memory != "" {
+		out = append(out, &ateapipb.Limits{Name: "memory", Quantity: memory})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return &ateapipb.Resources{Limits: out}
+}
+
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
-// An empty scope means SnapshotScopeFull.
-func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, scope SnapshotScope) *ateapipb.ActorTemplate {
+// A nil resources leaves the sandbox sized by the worker defaults; an empty
+// scope means SnapshotScopeFull.
+func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *ateapipb.Resources, scope SnapshotScope) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
 	}
@@ -378,13 +398,15 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
 			ConfigName:   "gvisor-default",
 		},
+		Resources: resources,
 	}
 }
 
-// EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image and optional environment variables.
+// EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image,
+// resource limits (nil for worker defaults), and optional environment variables.
 // The template's snapshot scope is the client's SnapshotScope. An existing
 // template is returned as it is.
-func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
+func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, resources *ateapipb.Resources, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
 	existing, err := c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 	if err == nil && existing != nil {
 		return existing, nil
@@ -397,7 +419,7 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 		}
 	}
 
-	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "", c.SnapshotScope())
+	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "", resources, c.SnapshotScope())
 	req := &ateapipb.CreateActorTemplateRequest{
 		ActorTemplate: tmpl,
 	}
