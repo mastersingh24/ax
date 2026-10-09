@@ -47,6 +47,11 @@ type RunnerStatus struct {
 	// ExitCode is the command's exit status, -1 if killed by a signal. Only
 	// meaningful when Exited is true.
 	ExitCode int `json:"exitCode"`
+	// ResumedAfterExit reports that the task was suspended and woken again
+	// after spec.command exited. With full snapshots the runner is restored
+	// as it was, so the command does not run again; whoever woke the task (a
+	// request, ax resume, ax ssh) is using what it left behind.
+	ResumedAfterExit bool `json:"resumedAfterExit,omitempty"`
 }
 
 const (
@@ -71,13 +76,22 @@ type activity struct {
 	inFlight int
 	exited   bool
 	exitCode int
+	// resumedAfterExit is set when a freeze is detected after the exit.
+	resumedAfterExit bool
+	// lastTick is the wall-clock time of the last resume-watch tick, zero
+	// until the watch runs; gap is the watch's threshold.
+	lastTick time.Time
+	gap      time.Duration
+	// wall is the wall clock a status read compares with lastTick; nil
+	// disables that check.
+	wall func() time.Time
 }
 
 func newActivity(now func() time.Time) *activity {
 	if now == nil {
 		now = time.Now
 	}
-	return &activity{now: now, last: now()}
+	return &activity{now: now, last: now(), wall: time.Now}
 }
 
 func (a *activity) begin() {
@@ -99,7 +113,25 @@ func (a *activity) end() {
 func (a *activity) reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.resetLocked()
+}
+
+func (a *activity) resetLocked() {
 	a.last = a.now()
+	if a.exited {
+		a.resumedAfterExit = true
+	}
+}
+
+// noteTickLocked records a resume-watch tick at wall-clock time now and
+// reports whether the process was frozen since the previous one.
+func (a *activity) noteTickLocked(now time.Time) bool {
+	// Round(0) drops the monotonic reading, which may not advance while the
+	// sandbox is frozen; wall-clock time does.
+	now = now.Round(0)
+	frozen := !a.lastTick.IsZero() && a.gap > 0 && now.Sub(a.lastTick) > a.gap
+	a.lastTick = now
+	return frozen
 }
 
 func (a *activity) setExit(code int) {
@@ -113,7 +145,14 @@ func (a *activity) setExit(code int) {
 func (a *activity) snapshot() RunnerStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	st := RunnerStatus{InFlight: a.inFlight, Exited: a.exited, ExitCode: a.exitCode}
+	// A status read can arrive right after a restore, before the watch has
+	// ticked; catch the freeze here so the answer never comes from the old
+	// snapshot's clock.
+	if a.wall != nil && !a.lastTick.IsZero() && a.noteTickLocked(a.wall()) {
+		slog.Info("runner was suspended and resumed; restarting the idle clock")
+		a.resetLocked()
+	}
+	st := RunnerStatus{InFlight: a.inFlight, Exited: a.exited, ExitCode: a.exitCode, ResumedAfterExit: a.resumedAfterExit}
 	if a.inFlight == 0 {
 		if idle := a.now().Sub(a.last); idle > 0 {
 			st.IdleSeconds = int64(idle / time.Second)
@@ -131,11 +170,13 @@ func (a *activity) track(h http.Handler) http.Handler {
 	})
 }
 
-// watchResume resets the idle clock when the process has been frozen. A task
-// resumes from a snapshot whose memory still holds the time of the last
-// request before it, possibly hours ago; without this it would look idle the
-// moment it came back. A suspend shows up as consecutive ticks much further
-// apart than the tick interval.
+// watchResume resets the idle clock when the process has been frozen. With
+// full snapshots (ax-server's default) a task resumes with the runner's
+// memory as it was at the suspend, still holding the time of the last request
+// before it, possibly hours ago; without this it would look idle the moment
+// it came back. A suspend shows up as consecutive ticks much further apart
+// than the tick interval. With data-only snapshots the runner starts afresh
+// on resume and never sees a gap.
 func (a *activity) watchResume(ctx context.Context, tick, gap time.Duration) {
 	t := time.NewTicker(tick)
 	defer t.Stop()
@@ -145,18 +186,21 @@ func (a *activity) watchResume(ctx context.Context, tick, gap time.Duration) {
 // resetOnGaps resets the idle clock whenever two consecutive ticks are more
 // than gap apart in wall-clock time.
 func (a *activity) resetOnGaps(ctx context.Context, ticks <-chan time.Time, prev time.Time, gap time.Duration) {
+	a.mu.Lock()
+	a.gap = gap
+	a.lastTick = prev.Round(0)
+	a.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticks:
-			// Round(0) drops the monotonic reading, which may not advance while
-			// the sandbox is frozen; wall-clock time does.
-			if now.Round(0).Sub(prev.Round(0)) > gap {
+			a.mu.Lock()
+			if a.noteTickLocked(now) {
 				slog.Info("runner was suspended and resumed; restarting the idle clock")
-				a.reset()
+				a.resetLocked()
 			}
-			prev = now
+			a.mu.Unlock()
 		}
 	}
 }

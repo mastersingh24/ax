@@ -41,6 +41,47 @@ type ClientOptions struct {
 	CAFile      string
 	InsecureTLS bool
 	Plaintext   bool
+	// SnapshotScope is what the snapshots of the ActorTemplates this client
+	// creates capture. Empty means SnapshotScopeFull.
+	SnapshotScope SnapshotScope
+}
+
+// SnapshotScope selects what an actor's snapshots capture, and so what a
+// suspended task looks like when it wakes. It becomes the ActorTemplate's
+// snapshotConfig.onCommit, which on Agent Substrate v0.4 governs both the
+// node-local checkpoint a pause takes and the snapshot a suspend uploads.
+type SnapshotScope string
+
+const (
+	// SnapshotScopeFull captures process memory, the root filesystem and the
+	// durable directories (/workspace). A woken task carries on where it was:
+	// the command is not restarted and in-memory state survives. Snapshots are
+	// larger and take longer to upload and restore.
+	SnapshotScopeFull SnapshotScope = "full"
+	// SnapshotScopeData captures only the durable directories. A woken task's
+	// containers start afresh from the image with /workspace restored, so the
+	// runner and spec.command start again and anything kept only in memory or
+	// outside /workspace is lost. Snapshots are small.
+	SnapshotScopeData SnapshotScope = "data"
+)
+
+// ParseSnapshotScope parses "full" or "data", case-insensitively. Empty
+// means full.
+func ParseSnapshotScope(s string) (SnapshotScope, error) {
+	switch SnapshotScope(strings.ToLower(strings.TrimSpace(s))) {
+	case "", SnapshotScopeFull:
+		return SnapshotScopeFull, nil
+	case SnapshotScopeData:
+		return SnapshotScopeData, nil
+	}
+	return "", fmt.Errorf("invalid snapshot scope %q: must be %q or %q", s, SnapshotScopeFull, SnapshotScopeData)
+}
+
+func (s SnapshotScope) contentScope() ateapipb.SnapshotContentScope {
+	if s == SnapshotScopeData {
+		return ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA
+	}
+	return ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL
 }
 
 type tokenAuth struct {
@@ -66,8 +107,9 @@ func (t tokenAuth) RequireTransportSecurity() bool {
 
 // Client wraps the Substrate Control API client.
 type Client struct {
-	conn    *grpc.ClientConn
-	control ateapipb.ControlClient
+	conn          *grpc.ClientConn
+	control       ateapipb.ControlClient
+	snapshotScope SnapshotScope
 }
 
 // NewClientWithOptions connects to Substrate with full TLS and auth configuration.
@@ -143,9 +185,18 @@ func NewClientWithOptions(opts ClientOptions, extraDialOpts ...grpc.DialOption) 
 		return nil, fmt.Errorf("failed to connect to Substrate control service at %s: %w", opts.Target, err)
 	}
 	return &Client{
-		conn:    conn,
-		control: ateapipb.NewControlClient(conn),
+		conn:          conn,
+		control:       ateapipb.NewControlClient(conn),
+		snapshotScope: opts.SnapshotScope,
 	}, nil
+}
+
+// SnapshotScope reports the scope of the ActorTemplates this client creates.
+func (c *Client) SnapshotScope() SnapshotScope {
+	if c.snapshotScope == "" {
+		return SnapshotScopeFull
+	}
+	return c.snapshotScope
 }
 
 // NewClient establishes a connection to the Substrate Control API server.
@@ -212,14 +263,23 @@ const (
 	egressTrustBundleDir  = "/run/ate"
 	egressTrustBundleFile = egressTrustBundleDir + "/trust-bundle.pem"
 	egressTrustBundleName = "egress-mitm.ate.dev"
+	// systemRootsBundleName is Substrate's built-in set of public CA roots
+	// (Agent Substrate v0.4+).
+	systemRootsBundleName = "system-roots.ate.dev"
 )
 
-// egressTrustEnv points common TLS stacks at the projected egress gateway CA.
-// SSL_CERT_DIR is set too so Go and OpenSSL trust only that CA: behind an
-// intercepting gateway every TLS origin is fronted by it anyway.
+// egressTrustBundleNames are unified into the one projected file, so it holds
+// the egress gateway CA and the public roots. Tools that treat their CA
+// variable as a replacement for the system store (Python requests, curl's
+// CURL_CA_BUNDLE) then still trust origins the gateway does not intercept.
+var egressTrustBundleNames = []string{egressTrustBundleName, systemRootsBundleName}
+
+// egressTrustEnv points common TLS stacks at the projected trust bundle.
+// SSL_CERT_DIR is deliberately not set: it would replace the image's whole
+// trust store, which Agent Substrate's guidance (substrate#2044) advises
+// against. SSL_CERT_FILE adds to it for Go and OpenSSL.
 var egressTrustEnv = map[string]string{
 	"SSL_CERT_FILE":       egressTrustBundleFile,
-	"SSL_CERT_DIR":        egressTrustBundleDir,
 	"REQUESTS_CA_BUNDLE":  egressTrustBundleFile,
 	"CURL_CA_BUNDLE":      egressTrustBundleFile,
 	"GIT_SSL_CAINFO":      egressTrustBundleFile,
@@ -227,7 +287,8 @@ var egressTrustEnv = map[string]string{
 }
 
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
-func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string) *ateapipb.ActorTemplate {
+// An empty scope means SnapshotScopeFull.
+func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, scope SnapshotScope) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
 	}
@@ -281,7 +342,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Name: "egress-trust",
 			SystemInfo: &ateapipb.SystemInfoVolumeSource{
 				DataSources: []*ateapipb.SystemInfoDataSource{{
-					TrustBundle: &ateapipb.TrustBundleDataSource{Name: egressTrustBundleName, Path: "trust-bundle.pem"},
+					TrustBundle: &ateapipb.TrustBundleDataSource{Names: egressTrustBundleNames, Path: "trust-bundle.pem"},
 				}},
 			},
 		})
@@ -306,13 +367,12 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			VolumeMounts: mounts,
 		}},
 		Volumes: volumes,
+		// Agent Substrate v0.4 has one scope for every snapshot of an actor
+		// (pause and suspend) and rejects the onPause and onResume fields
+		// earlier versions took. See SnapshotScope for the trade-off.
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
-			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
-			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
-			OnResume: &ateapipb.OnResumeConfig{
-				FromData: ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN,
-			},
+			OnCommit:        scope.contentScope(),
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
 			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
@@ -322,6 +382,8 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 }
 
 // EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image and optional environment variables.
+// The template's snapshot scope is the client's SnapshotScope. An existing
+// template is returned as it is.
 func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
 	existing, err := c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 	if err == nil && existing != nil {
@@ -335,7 +397,7 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 		}
 	}
 
-	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "")
+	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "", c.SnapshotScope())
 	req := &ateapipb.CreateActorTemplateRequest{
 		ActorTemplate: tmpl,
 	}
@@ -350,9 +412,10 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 }
 
 // BuildEgressPolicy converts a task's egress rules into a Substrate egress
-// policy. Every rule becomes an https rule: credentials can only be injected
-// into HTTPS the gateway intercepts, and on v0.3.0 Substrate's gateway ignores
-// tls_passthrough rules.
+// policy. Every rule becomes an https rule, which the gateway intercepts,
+// because credentials can only be injected into traffic it terminates.
+// Agent Substrate v0.4 also enforces tls_passthrough rules (v0.3 ignored
+// them); AX does not generate any yet.
 func BuildEgressPolicy(atespace string, rules []*v1alpha1.EgressRule) *ateapipb.EgressPolicy {
 	policy := &ateapipb.EgressPolicy{
 		Metadata: &ateapipb.ResourceMetadata{Atespace: atespace, Name: "default"},
@@ -481,11 +544,19 @@ func (c *Client) ResumeActor(ctx context.Context, atespace, actorName string) (*
 	if resp.Actor == nil {
 		return nil, "", fmt.Errorf("nil actor returned when resuming %s/%s", atespace, actorName)
 	}
-	var workerIP string
-	if resp.Actor.Status != nil && resp.Actor.Status.WorkerAssignment != nil {
-		workerIP = resp.Actor.Status.WorkerAssignment.WorkerPodIp
+	return resp.Actor, WorkerIP(resp.Actor), nil
+}
+
+// WorkerIP returns the address of the worker pod hosting the actor, or ""
+// when it has none. Agent Substrate v0.4 reports up to one IP per family,
+// primary family first; the first non-empty one is used.
+func WorkerIP(actor *ateapipb.Actor) string {
+	for _, ip := range actor.GetStatus().GetWorkerAssignment().GetWorkerPodIps() {
+		if ip != "" {
+			return ip
+		}
 	}
-	return resp.Actor, workerIP, nil
+	return ""
 }
 
 // SuspendActor suspends the specified actor, triggering state checkpointing.

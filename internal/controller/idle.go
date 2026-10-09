@@ -26,6 +26,7 @@ import (
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/google/ax/internal/metadata"
+	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 )
 
@@ -49,6 +50,11 @@ const (
 	// should answer in milliseconds when it is reachable at all.
 	directStatusTimeout = 1 * time.Second
 	runnerBodyLimit     = 64 << 10
+
+	// completedWakeGrace is how long a task with spec.onCompletion: Suspend
+	// that was woken after its command exited may go without requests before
+	// it is suspended again, when it has no spec.idle.suspendAfter.
+	completedWakeGrace = 5 * time.Minute
 )
 
 // idleDecision is what CheckIdle concluded about a running task.
@@ -65,21 +71,37 @@ type idleDecision struct {
 // comes from an old snapshot.
 func decideIdle(spec *v1alpha1.TaskSpec, st metadata.RunnerStatus, runningFor time.Duration) idleDecision {
 	if st.Exited && spec.SuspendOnCompletion() {
+		if !st.ResumedAfterExit {
+			return idleDecision{
+				suspend: true,
+				reason:  ReasonCompletedSuspended,
+				message: fmt.Sprintf("Task command exited with code %d; suspended because spec.onCompletion is Suspend", st.ExitCode),
+			}
+		}
+		// The task was woken after its command had exited. With full
+		// snapshots the command does not run again, so whoever woke it (a
+		// request, ax resume, ax ssh) wants what it left behind. Suspending
+		// on the spot would cut them off; wait until it is idle instead.
+		grace := spec.IdleSuspendAfter()
+		if grace <= 0 {
+			grace = completedWakeGrace
+		}
+		idle, ok := idleFor(st, runningFor, grace)
+		if !ok {
+			return idleDecision{}
+		}
 		return idleDecision{
 			suspend: true,
 			reason:  ReasonCompletedSuspended,
-			message: fmt.Sprintf("Task command exited with code %d; suspended because spec.onCompletion is Suspend", st.ExitCode),
+			message: fmt.Sprintf("Task command had exited with code %d before the task was woken; suspended again after %s without requests because spec.onCompletion is Suspend", st.ExitCode, idle.Truncate(time.Second)),
 		}
 	}
 	after := spec.IdleSuspendAfter()
-	if after <= 0 || st.InFlight > 0 || st.Busy {
+	if after <= 0 {
 		return idleDecision{}
 	}
-	idle := time.Duration(st.IdleSeconds) * time.Second
-	if runningFor < idle {
-		idle = runningFor
-	}
-	if idle < after {
+	idle, ok := idleFor(st, runningFor, after)
+	if !ok {
 		return idleDecision{}
 	}
 	return idleDecision{
@@ -87,6 +109,20 @@ func decideIdle(spec *v1alpha1.TaskSpec, st metadata.RunnerStatus, runningFor ti
 		reason:  ReasonIdleSuspended,
 		message: fmt.Sprintf("No requests for %s; suspended because spec.idle.suspendAfter is %s. The next request through the router resumes it.", idle.Truncate(time.Second), after),
 	}
+}
+
+// idleFor returns how long the task has been idle, capped by how long the
+// control plane has seen it running, and whether that reaches after with no
+// request open and the task not busy.
+func idleFor(st metadata.RunnerStatus, runningFor, after time.Duration) (time.Duration, bool) {
+	if st.InFlight > 0 || st.Busy {
+		return 0, false
+	}
+	idle := time.Duration(st.IdleSeconds) * time.Second
+	if runningFor < idle {
+		idle = runningFor
+	}
+	return idle, idle >= after
 }
 
 // CheckIdle suspends the task if its spec.idle or spec.onCompletion policy
@@ -141,7 +177,7 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 	}
 
 	since := r.markRunning(key, now)
-	workerIP := actor.GetStatus().GetWorkerAssignment().GetWorkerPodIp()
+	workerIP := substrate.WorkerIP(actor)
 	changed := false
 	if phase == "Suspended" {
 		task.Status.Phase = "Running"

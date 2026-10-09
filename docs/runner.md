@@ -23,7 +23,7 @@ The control plane does not run `spec.command` as the container entrypoint. It al
 
 Two consequences follow from that table. Your image must contain an executable at `/usr/local/bin/ax-task-runner`, even if it is a symlink or a shell wrapper around something else. And `spec.command` reaches the runner only through `AX_TASK_YAML`; the runner is responsible for parsing it and starting it.
 
-The `/workspace` volume is what survives suspend and resume. Agent Substrate snapshots it when a task is suspended and restores it into a fresh container when the task is resumed, so the runner will see the same files but a new process tree.
+The `/workspace` volume always survives suspend and resume. What else does depends on `ax-server`'s `--snapshot-scope`. With `full`, the default, Agent Substrate also snapshots the runner's memory and root filesystem, so a resumed runner carries on as if it had been paused: same processes, same state, with a jump in the wall clock. With `data`, only `/workspace` is kept and is restored into a fresh container, so the runner sees the same files but starts again with a new process tree. A runner should cope with both: keep what must survive in `/workspace`, make setup idempotent (AX's runner records completed workspace setup in a marker file), and don't trust in-memory timers across a wall-clock jump. See [Automatic suspension](idle-suspend.md#what-a-woken-task-looks-like).
 
 ## What a runner must do
 

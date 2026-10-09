@@ -174,7 +174,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	}
 
 	// Only launch configuration belongs in the template; status changes
-	// must not create new golden snapshots.
+	// must not provision new templates (each one gets its own golden snapshot).
 	launchTask := proto.Clone(task).(*v1alpha1.Task)
 	launchTask.Status = nil
 	// The runner never needs egress rules (the control plane applies them as
@@ -266,7 +266,9 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		host = h
 		port = p
 	}
-	readyURL := fmt.Sprintf("http://%s:%s/readyz?check=workspace", host, port)
+	// JoinHostPort brackets an IPv6 worker address, which Substrate v0.4
+	// reports first on IPv6-primary clusters.
+	readyURL := fmt.Sprintf("http://%s/readyz?check=workspace", net.JoinHostPort(host, port))
 	// Workspace setup happens once per task. After it has completed, WorkspaceReady stays
 	// True across suspend/resume cycles, so only poll while it is still initializing.
 	workspaceReady := r.conditionTrue(task, condWorkspaceReady)

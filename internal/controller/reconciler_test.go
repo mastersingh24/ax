@@ -127,8 +127,8 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 			Status: &ateapipb.ActorStatus{
 				State: ateapipb.ActorState_ACTOR_STATE_RUNNING,
 				WorkerAssignment: &ateapipb.WorkerAssignment{
-					WorkerPod:   "worker-pod-1",
-					WorkerPodIp: wIP,
+					WorkerPod:    "worker-pod-1",
+					WorkerPodIps: []string{wIP},
 				},
 			},
 		},

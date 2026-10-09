@@ -15,9 +15,14 @@
 package substrate
 
 import (
+	"context"
+	"slices"
 	"testing"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func envValue(c *ateapipb.Container, name string) (string, bool) {
@@ -31,11 +36,17 @@ func envValue(c *ateapipb.Container, name string) (string, bool) {
 
 func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "true")
-	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, "gs://b/")
+	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, "gs://b/", "")
 
 	var found bool
 	for _, v := range tmpl.GetVolumes() {
-		if tb := v.GetSystemInfo().GetDataSources(); len(tb) == 1 && tb[0].GetTrustBundle().GetName() == egressTrustBundleName {
+		tb := v.GetSystemInfo().GetDataSources()
+		if len(tb) != 1 {
+			continue
+		}
+		// One file holding the gateway CA and Substrate's public roots.
+		names := tb[0].GetTrustBundle().GetNames()
+		if slices.Contains(names, egressTrustBundleName) && slices.Contains(names, systemRootsBundleName) {
 			found = true
 		}
 	}
@@ -58,15 +69,108 @@ func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 	if v, _ := envValue(c, "CURL_CA_BUNDLE"); v != "/mine.pem" {
 		t.Errorf("task env should win: CURL_CA_BUNDLE = %q", v)
 	}
+	// SSL_CERT_DIR would replace the image's trust store instead of adding to it.
+	if v, ok := envValue(c, "SSL_CERT_DIR"); ok {
+		t.Errorf("SSL_CERT_DIR = %q, want unset", v)
+	}
 }
 
 func TestBuildActorTemplate_NoTrustBundleByDefault(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "")
-	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/")
+	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", "")
 	if got := len(tmpl.GetVolumes()); got != 1 {
 		t.Errorf("expected only the workspace volume, got %d", got)
 	}
 	if _, ok := envValue(tmpl.GetContainers()[0], "SSL_CERT_FILE"); ok {
 		t.Error("SSL_CERT_FILE should not be set without AX_EGRESS_MITM_TRUST_BUNDLE")
+	}
+}
+
+func TestBuildActorTemplate_SnapshotScope(t *testing.T) {
+	for _, tc := range []struct {
+		scope SnapshotScope
+		want  ateapipb.SnapshotContentScope
+	}{
+		{"", ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL},
+		{SnapshotScopeFull, ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL},
+		{SnapshotScopeData, ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA},
+	} {
+		cfg := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", tc.scope).GetSnapshotConfig()
+		if cfg.GetOnCommit() != tc.want {
+			t.Errorf("scope %q: onCommit = %v, want %v", tc.scope, cfg.GetOnCommit(), tc.want)
+		}
+		if cfg.GetStorageLocation() != "gs://b/" {
+			t.Errorf("scope %q: storageLocation = %q", tc.scope, cfg.GetStorageLocation())
+		}
+	}
+}
+
+func TestParseSnapshotScope(t *testing.T) {
+	for in, want := range map[string]SnapshotScope{"": SnapshotScopeFull, "full": SnapshotScopeFull, "FULL": SnapshotScopeFull, " data ": SnapshotScopeData} {
+		got, err := ParseSnapshotScope(in)
+		if err != nil || got != want {
+			t.Errorf("ParseSnapshotScope(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"golden", "data_on_golden", "memory"} {
+		if _, err := ParseSnapshotScope(in); err == nil {
+			t.Errorf("ParseSnapshotScope(%q) succeeded, want error", in)
+		}
+	}
+}
+
+// templateRecorder captures the template EnsureActorTemplateWithImage creates.
+type templateRecorder struct {
+	ateapipb.ControlClient
+	created *ateapipb.ActorTemplate
+}
+
+func (r *templateRecorder) GetActorTemplate(context.Context, *ateapipb.GetActorTemplateRequest, ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
+	return nil, status.Error(codes.NotFound, "no template")
+}
+
+func (r *templateRecorder) CreateActorTemplate(_ context.Context, req *ateapipb.CreateActorTemplateRequest, _ ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
+	r.created = req.GetActorTemplate()
+	return r.created, nil
+}
+
+func TestEnsureActorTemplateWithImage_UsesClientScope(t *testing.T) {
+	for _, tc := range []struct {
+		scope SnapshotScope
+		want  ateapipb.SnapshotContentScope
+	}{
+		{"", ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL},
+		{SnapshotScopeData, ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA},
+	} {
+		rec := &templateRecorder{}
+		c := &Client{control: rec, snapshotScope: tc.scope}
+		if _, err := c.EnsureActorTemplateWithImage(context.Background(), "ax-system", "base", "default", "t", "img"); err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.created.GetSnapshotConfig().GetOnCommit(); got != tc.want {
+			t.Errorf("client scope %q: onCommit = %v, want %v", tc.scope, got, tc.want)
+		}
+	}
+}
+
+func TestWorkerIP(t *testing.T) {
+	actor := func(ips ...string) *ateapipb.Actor {
+		return &ateapipb.Actor{Status: &ateapipb.ActorStatus{WorkerAssignment: &ateapipb.WorkerAssignment{WorkerPodIps: ips}}}
+	}
+	for _, tc := range []struct {
+		actor *ateapipb.Actor
+		want  string
+	}{
+		{nil, ""},
+		{&ateapipb.Actor{}, ""},
+		{actor(), ""},
+		{actor(""), ""},
+		{actor("10.0.0.5"), "10.0.0.5"},
+		{actor("10.0.0.5", "fd00::5"), "10.0.0.5"},
+		{actor("", "fd00::5"), "fd00::5"},
+	} {
+		if got := WorkerIP(tc.actor); got != tc.want {
+			t.Errorf("WorkerIP(%v) = %q, want %q", tc.actor, got, tc.want)
+		}
 	}
 }

@@ -46,6 +46,7 @@ func main() {
 		defaultTemplate         string
 		defaultTemplateAtespace string
 		idleCheckInterval       time.Duration
+		snapshotScope           string
 	)
 
 	flag.StringVar(&listenAddr, "addr", ":8080", "HTTP listen address")
@@ -60,7 +61,16 @@ func main() {
 	flag.StringVar(&defaultTemplate, "template", "default-template", "Default Substrate ActorTemplate name")
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", "ax-system", "Default Substrate ActorTemplate atespace")
 	flag.DurationVar(&idleCheckInterval, "idle-check-interval", 30*time.Second, "How often to check tasks with spec.idle or spec.onCompletion: Suspend for automatic suspension; 0 disables it")
+	flag.StringVar(&snapshotScope, "snapshot-scope", envOr("AX_SNAPSHOT_SCOPE", string(substrate.SnapshotScopeFull)),
+		"What the snapshots of task ActorTemplates capture: \"full\" (memory, root filesystem and /workspace; a woken task carries on where it was) "+
+			"or \"data\" (only /workspace; a woken task restarts from its image). Applies to templates created from now on; $AX_SNAPSHOT_SCOPE sets the default")
 	flag.Parse()
+
+	scope, err := substrate.ParseSnapshotScope(snapshotScope)
+	if err != nil {
+		slog.Error("invalid --snapshot-scope", "error", err)
+		os.Exit(2)
+	}
 
 	if envAddr := os.Getenv("ADDR"); envAddr != "" {
 		listenAddr = envAddr
@@ -80,6 +90,7 @@ func main() {
 		"redisAddr", redisAddr,
 		"substrateEndpoint", substrateEndpoint,
 		"template", defaultTemplate,
+		"snapshotScope", scope,
 	)
 
 	rClient := goredis.NewClient(&goredis.Options{
@@ -99,6 +110,8 @@ func main() {
 		CAFile:      substrateCAFile,
 		InsecureTLS: substrateInsecureTLS,
 		Plaintext:   substratePlaintext,
+
+		SnapshotScope: scope,
 	})
 	if err != nil {
 		slog.Warn("could not initialize substrate client; running without substrate reconciliation", "error", err)
@@ -138,4 +151,12 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+// envOr returns the environment variable key, or def when it is unset or empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

@@ -87,7 +87,7 @@ func newIdleHarness(t *testing.T) *idleHarness {
 		defer h.mu.Unlock()
 		st := &ateapipb.ActorStatus{State: h.actorState}
 		if h.actorState == ateapipb.ActorState_ACTOR_STATE_RUNNING {
-			st.WorkerAssignment = &ateapipb.WorkerAssignment{WorkerPodIp: h.workerIP}
+			st.WorkerAssignment = &ateapipb.WorkerAssignment{WorkerPodIps: []string{h.workerIP}}
 		}
 		return &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Name: req.GetActor().GetName()}, Status: st}, nil
 	}
