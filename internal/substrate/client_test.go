@@ -199,7 +199,7 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
 }
 
 func TestBuildActorTemplate(t *testing.T) {
-	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil)
+	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil, SnapshotScopeData)
 	if tmpl.GetMetadata().GetAtespace() != "default" {
 		t.Errorf("expected default atespace, got %q", tmpl.GetMetadata().GetAtespace())
 	}
@@ -226,7 +226,7 @@ func TestBuildActorTemplate(t *testing.T) {
 	}
 
 	// When snapshotsBucket is explicitly provided, StorageLocation is set.
-	tmplWithBucket := BuildActorTemplate("", "test-tmpl", "", nil, nil, "gs://ate-snapshots/ax/", nil)
+	tmplWithBucket := BuildActorTemplate("", "test-tmpl", "", nil, nil, "gs://ate-snapshots/ax/", nil, SnapshotScopeData)
 	if tmplWithBucket.GetSnapshotConfig().GetStorageLocation() != "gs://ate-snapshots/ax/" {
 		t.Errorf("expected StorageLocation gs://ate-snapshots/ax/, got %q", tmplWithBucket.GetSnapshotConfig().GetStorageLocation())
 	}
@@ -496,7 +496,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: 2000,
 		MemoryBytes:   4 << 30,
 	}}
-	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits)
+	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits, "")
 	if !proto.Equal(tmpl.GetResources(), limits) {
 		t.Fatalf("template resources = %v, want %v", tmpl.GetResources(), limits)
 	}
@@ -507,7 +507,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: DefaultCPUMillicores,
 		MemoryBytes:   DefaultMemoryBytes,
 	}}
-	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil)
+	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil, "")
 	if !proto.Equal(tmpl.GetResources(), wantDefault) {
 		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
 	}
