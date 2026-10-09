@@ -201,7 +201,7 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
 func TestBuildActorTemplate(t *testing.T) {
 	t.Setenv("AX_SNAPSHOTS_BUCKET", "gs://ate-snapshots/ax/")
 
-	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil)
+	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil, SnapshotScopeData)
 	if tmpl.GetMetadata().GetAtespace() != "default" {
 		t.Errorf("expected default atespace, got %q", tmpl.GetMetadata().GetAtespace())
 	}
@@ -492,7 +492,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: 2000,
 		MemoryBytes:   4 << 30,
 	}}
-	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits)
+	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits, "")
 	if !proto.Equal(tmpl.GetResources(), limits) {
 		t.Fatalf("template resources = %v, want %v", tmpl.GetResources(), limits)
 	}
@@ -503,7 +503,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: DefaultCPUMillicores,
 		MemoryBytes:   DefaultMemoryBytes,
 	}}
-	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil)
+	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil, "")
 	if !proto.Equal(tmpl.GetResources(), wantDefault) {
 		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
 	}

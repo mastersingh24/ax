@@ -24,7 +24,7 @@ Two consequences follow from that table. Your image must contain an executable a
 
 **Runner-specific settings** belong in `spec.config`, a free-form object that AX passes through unchanged inside `AX_TASK_YAML` (and the task metadata endpoint). The runner owns its schema; the control plane only checks that it is an object of at most 16 KiB and that the whole encoded task fits in 31 KiB. Decode `AX_TASK_YAML` leniently (the Go package offers `v1alpha1.UnmarshalYAMLLenient`) so the runner keeps working when a newer control plane adds fields. See [Runner configuration](manifests.md#runner-configuration).
 
-The `/workspace` volume is what survives suspend and resume. Agent Substrate snapshots it when a task is suspended and restores it into a fresh container when the task is resumed, so the runner will see the same files but a new process tree.
+The `/workspace` volume always survives suspend and resume. What else does depends on `ax-server`'s `--snapshot-scope`. With `full`, the default, Agent Substrate also snapshots the runner's memory and root filesystem, so a resumed runner carries on as if it had been paused: same processes, same state, with a jump in the wall clock. With `data`, only `/workspace` is kept and is restored into a fresh container, so the runner sees the same files but starts again with a new process tree. A runner should cope with both: keep what must survive in `/workspace`, make setup idempotent (AX's runner records completed workspace setup in a marker file), and don't trust in-memory timers across a wall-clock jump. See [Automatic suspension](idle-suspend.md#what-a-woken-task-looks-like).
 
 ## What a runner must do
 
