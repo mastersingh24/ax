@@ -24,9 +24,10 @@ import (
 	"net/http"
 	"time"
 
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"github.com/google/ax/internal/metadata"
+	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
 
 // Reasons recorded on the Ready condition by automatic suspension.
@@ -49,6 +50,11 @@ const (
 	// should answer in milliseconds when it is reachable at all.
 	directStatusTimeout = 1 * time.Second
 	runnerBodyLimit     = 64 << 10
+
+	// completedWakeGrace is how long a task with spec.onCompletion: Suspend
+	// that was woken after its command exited may go without requests before
+	// it is suspended again, when it has no spec.idle.suspendAfter.
+	completedWakeGrace = 5 * time.Minute
 )
 
 // idleDecision is what CheckIdle concluded about a running task.
@@ -65,21 +71,37 @@ type idleDecision struct {
 // comes from an old snapshot.
 func decideIdle(spec *v1alpha1.TaskSpec, st metadata.RunnerStatus, runningFor time.Duration) idleDecision {
 	if st.Exited && spec.SuspendOnCompletion() {
+		if !st.ResumedAfterExit {
+			return idleDecision{
+				suspend: true,
+				reason:  ReasonCompletedSuspended,
+				message: fmt.Sprintf("Task command exited with code %d; suspended because spec.onCompletion is Suspend", st.ExitCode),
+			}
+		}
+		// The task was woken after its command had exited. With full
+		// snapshots the command does not run again, so whoever woke it (a
+		// request, ax resume, ax ssh) wants what it left behind. Suspending
+		// on the spot would cut them off; wait until it is idle instead.
+		grace := spec.IdleSuspendAfter()
+		if grace <= 0 {
+			grace = completedWakeGrace
+		}
+		idle, ok := idleFor(st, runningFor, grace)
+		if !ok {
+			return idleDecision{}
+		}
 		return idleDecision{
 			suspend: true,
 			reason:  ReasonCompletedSuspended,
-			message: fmt.Sprintf("Task command exited with code %d; suspended because spec.onCompletion is Suspend", st.ExitCode),
+			message: fmt.Sprintf("Task command had exited with code %d before the task was woken; suspended again after %s without requests because spec.onCompletion is Suspend", st.ExitCode, idle.Truncate(time.Second)),
 		}
 	}
 	after := spec.IdleSuspendAfter()
-	if after <= 0 || st.InFlight > 0 || st.Busy {
+	if after <= 0 {
 		return idleDecision{}
 	}
-	idle := time.Duration(st.IdleSeconds) * time.Second
-	if runningFor < idle {
-		idle = runningFor
-	}
-	if idle < after {
+	idle, ok := idleFor(st, runningFor, after)
+	if !ok {
 		return idleDecision{}
 	}
 	return idleDecision{
@@ -94,6 +116,20 @@ func decideIdle(spec *v1alpha1.TaskSpec, st metadata.RunnerStatus, runningFor ti
 // actor on every read, AX owns this condition, so the store keeps it. It turns
 // False with ReasonResumedByRequest once the actor is seen running again.
 const ConditionAutoSuspended = "AutoSuspended"
+
+// idleFor returns how long the task has been idle, capped by how long the
+// control plane has seen it running, and whether that reaches after with no
+// request open and the task not busy.
+func idleFor(st metadata.RunnerStatus, runningFor, after time.Duration) (time.Duration, bool) {
+	if st.InFlight > 0 || st.Busy {
+		return 0, false
+	}
+	idle := time.Duration(st.IdleSeconds) * time.Second
+	if runningFor < idle {
+		idle = runningFor
+	}
+	return idle, idle >= after
+}
 
 // CheckIdle suspends the task if its spec.idle or spec.onCompletion policy
 // says so. It returns the task and whether its stored status changed.
@@ -139,7 +175,7 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 	}
 
 	since := r.markRunning(key, now)
-	workerIP := firstWorkerIP(actor)
+	workerIP := substrate.WorkerIP(actor)
 	changed := false
 	if conditionTrue(task, ConditionAutoSuspended) {
 		setCondition(task, ConditionAutoSuspended, "False", ReasonResumedByRequest, "Agent Substrate resumed the task to deliver a request", now)
@@ -255,15 +291,4 @@ func (r *TaskReconciler) forgetRunning(key string) {
 	r.runningMu.Lock()
 	defer r.runningMu.Unlock()
 	delete(r.runningSince, key)
-}
-
-// firstWorkerIP returns the first non-empty address of the worker pod hosting
-// actor, or "" when it has none.
-func firstWorkerIP(actor *ateapipb.Actor) string {
-	for _, ip := range actor.GetStatus().GetWorkerAssignment().GetWorkerPodIps() {
-		if ip != "" {
-			return ip
-		}
-	}
-	return ""
 }

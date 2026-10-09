@@ -49,6 +49,7 @@ func main() {
 		defaultTemplateAtespace string
 		defaultTaskImage        string
 		idleCheckInterval       time.Duration
+		snapshotScope           string
 	)
 
 	flag.StringVar(&listenAddr, "addr", ":8080", "HTTP listen address")
@@ -63,7 +64,16 @@ func main() {
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", v1alpha1.DefaultSystemNamespace, "Default Substrate ActorTemplate atespace")
 	flag.StringVar(&defaultTaskImage, "default-task-image", v1alpha1.DefaultTaskImage, "Container image for tasks that do not set spec.image (env: AX_DEFAULT_TASK_IMAGE)")
 	flag.DurationVar(&idleCheckInterval, "idle-check-interval", 30*time.Second, "How often to check tasks with spec.idle or spec.onCompletion: Suspend for automatic suspension; 0 disables it")
+	flag.StringVar(&snapshotScope, "snapshot-scope", envOr("AX_SNAPSHOT_SCOPE", string(substrate.SnapshotScopeFull)),
+		"What the snapshots of task ActorTemplates capture: \"full\" (memory, root filesystem and /workspace; a woken task carries on where it was) "+
+			"or \"data\" (only /workspace; a woken task restarts from its image). Applies to templates created from now on; $AX_SNAPSHOT_SCOPE sets the default")
 	flag.Parse()
+
+	scope, err := substrate.ParseSnapshotScope(snapshotScope)
+	if err != nil {
+		slog.Error("invalid --snapshot-scope", "error", err)
+		os.Exit(2)
+	}
 
 	if envAddr := os.Getenv("ADDR"); envAddr != "" {
 		listenAddr = envAddr
@@ -87,6 +97,7 @@ func main() {
 		"substrateEndpoint", substrateEndpoint,
 		"template", defaultTemplate,
 		"defaultTaskImage", defaultTaskImage,
+		"snapshotScope", scope,
 	)
 
 	openCtx, openCancel := context.WithTimeout(context.Background(), time.Minute)
@@ -105,6 +116,8 @@ func main() {
 		CAFile:      substrateCAFile,
 		InsecureTLS: substrateInsecureTLS,
 		Plaintext:   substratePlaintext,
+
+		SnapshotScope: scope,
 	})
 	if err != nil {
 		slog.Error("initializing substrate client", "error", err)
@@ -155,4 +168,12 @@ func describeStore(connString string) string {
 		return "<unparseable>"
 	}
 	return fmt.Sprintf("%s@%s/%s", cfg.User, net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), cfg.Database)
+}
+
+// envOr returns the environment variable key, or def when it is unset or empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

@@ -30,7 +30,7 @@ import (
 	"github.com/google/ax/internal/metadata"
 	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -337,7 +337,7 @@ func TestCheckIdle_FallsBackToRouterWhenWorkerHangs(t *testing.T) {
 	task.Spec.OnCompletion = v1alpha1.OnCompletionSuspend
 
 	got, changed := h.check(t, task)
-	if !changed || got.Status.Phase != "Suspended" {
+	if !changed || !hasCondition(got, controller.ConditionAutoSuspended, "True") {
 		t.Fatalf("router fallback was not reached after a hanging worker read: %+v", got.Status)
 	}
 }
@@ -369,4 +369,13 @@ func TestTaskReconciler_PassesOnlyBusyPathToRunner(t *testing.T) {
 	if task.Spec.GetIdle().GetSuspendAfter() != "10m" || task.Spec.GetOnCompletion() != v1alpha1.OnCompletionSuspend {
 		t.Errorf("Reconcile modified the task's own spec: %v", task.Spec)
 	}
+}
+
+func hasCondition(task *v1alpha1.Task, condType, status string) bool {
+	for _, c := range task.GetStatus().GetConditions() {
+		if c.GetType() == condType {
+			return c.GetStatus() == status
+		}
+	}
+	return false
 }
