@@ -33,6 +33,7 @@ The `/workspace` volume always survives suspend and resume. What else does depen
 |---|---|
 | `/healthz` | Return `200` as soon as the runner is alive. |
 | `/readyz` | Return `503` until the workspace is prepared, then `200`. AX polls this to set the task's `WorkspaceReady` condition, and `ax watch` shows the transition. |
+| `/metadata/v1alpha1/ax/status` | Return activity and command state as JSON. The control plane reads it from outside the container, so unlike the endpoints below it is on port 80. Optional, but without it AX cannot apply `spec.idle` or `spec.onCompletion`. See [Automatic suspension](idle-suspend.md). |
 
 **Serve metadata on loopback.** These endpoints are for your command, so serve them on a loopback address (the default runner uses `127.0.0.1:8099`) and pass that base URL as `AX_METADATA_URL`. Don't serve them on port 80.
 
@@ -40,7 +41,6 @@ The `/workspace` volume always survives suspend and resume. What else does depen
 |---|---|
 | `/metadata/v1alpha1/ax/task` | Return the `Task` as `application/yaml`. Optional, but your command and `ax` tooling may expect it. |
 | `/metadata/v1alpha1/ax/workspaces` | Return every bound `Workspace` as a multi-document YAML stream. Optional, as above. |
-| `/metadata/v1alpha1/ax/status` | Return activity and command state as JSON. Optional, but without it AX cannot apply `spec.idle` or `spec.onCompletion`. See [Automatic suspension](idle-suspend.md). |
 
 **Prepare each workspace once.** A task binds workspaces through `spec.workspaces`. For each binding, at its path, clone the Git repos from `spec.git`, create the skills path, write any MCP configuration, and run any environment bootstrap the binding asks for through its `goal`. A binding without a path lands at `/workspace/<name>`. Record that setup happened somewhere on the durable volume or in a known location, per workspace, then skip the work on later boots. Resume restarts the container, and re-cloning into a restored workspace would destroy the agent's state. The default runner writes a marker file under `/ax` for each workspace path.
 
@@ -174,8 +174,8 @@ Once the image is built, the fastest end-to-end check is a task with `debug: tru
 
 - Executable present at `/usr/local/bin/ax-task-runner`
 - Reads `AX_TASK_YAML` and `AX_WORKSPACES_YAML`
-- Serves `/healthz` and `/readyz` on port 80, with `/readyz` returning `503` until every workspace is ready
-- Serves the metadata endpoints on loopback only, at `AX_METADATA_URL`
+- Serves `/healthz` and `/readyz` on port 80, with `/readyz` returning `503` until every workspace is ready, and `/metadata/v1alpha1/ax/status` there if you want `spec.idle` or `spec.onCompletion`
+- Serves the task and workspace metadata endpoints on loopback only, at `AX_METADATA_URL`
 - Prepares each workspace exactly once across restarts and resumes, at its own path
 - Starts `spec.command` in the first workspace with `AX_METADATA_URL` and `spec.env`
 - Keeps running after the command exits

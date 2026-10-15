@@ -27,7 +27,7 @@ Tasks that set neither field behave exactly as before.
 
 Idleness is measured on traffic, by the runner, because the runner already sits in front of the task: with `spec.http.port` set, every request from the router that is not for the runner's own endpoints is forwarded to the task. The runner records when the last forwarded request finished and how many are open. A request that is still open, including a server-sent event stream or a WebSocket, keeps the task active for as long as it stays open. Calls to the guest services (`ax ssh`) count too.
 
-Requests to the runner's own endpoints (`/healthz`, `/readyz`, `/metadata/...`) do not count. The control plane and Agent Substrate poll those, and counting them would keep every task awake forever.
+Requests to the runner's own endpoints (`/healthz`, `/readyz`, `/metadata/v1alpha1/ax/status`) do not count. The control plane and Agent Substrate poll those, and counting them would keep every task awake forever.
 
 Traffic alone misses one case: an agent that accepted a request, answered "started", and is now an hour into an investigation with nobody connected. That is what `busyPath` is for. Before the control plane suspends an idle task, the runner sends `GET <busyPath>` to the task's port and the task answers:
 
@@ -42,7 +42,7 @@ Only a `200` whose JSON body has `"busy": true` means busy. Any other answer, in
 
 ## The runner's status endpoint
 
-The runner reports what it knows at `GET /metadata/v1alpha1/ax/status`:
+The runner reports what it knows at `GET /metadata/v1alpha1/ax/status` on port 80, next to `/readyz` (the other metadata endpoints are on loopback only):
 
 ```json
 {"idleSeconds": 412, "inFlight": 0, "busy": false, "exited": false, "exitCode": 0}
