@@ -226,6 +226,7 @@ func TestCheckIdle_NeverPollsSuspendedActors(t *testing.T) {
 		ateapipb.ActorState_ACTOR_STATE_SUSPENDING,
 		ateapipb.ActorState_ACTOR_STATE_RESUMING,
 		ateapipb.ActorState_ACTOR_STATE_CRASHED,
+		ateapipb.ActorState_ACTOR_STATE_REVERTING,
 	} {
 		h.set(func(h *idleHarness) { h.actorState = state })
 		if _, changed := h.check(t, idleTask("sleeper", "Suspended")); changed {

@@ -171,8 +171,8 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 		r.setCondition(task, condReady, "False", ReasonActorSuspended, "The task's actor was suspended outside AX", now)
 		return task, true, nil
 	default:
-		// Resuming, crashed, deleting and so on: leave it to the next pass or
-		// to an explicit reconcile.
+		// Resuming, crashed, reverting, deleting and so on: leave it to the
+		// next pass or to an explicit reconcile.
 		return task, false, nil
 	}
 
