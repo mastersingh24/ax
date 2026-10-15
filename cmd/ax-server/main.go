@@ -63,8 +63,8 @@ func main() {
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", v1alpha1.DefaultSystemNamespace, "Default Substrate ActorTemplate atespace")
 	flag.DurationVar(&idleCheckInterval, "idle-check-interval", 30*time.Second, "How often to check tasks with spec.idle or spec.onCompletion: Suspend for automatic suspension; 0 disables it")
 	flag.StringVar(&snapshotScope, "snapshot-scope", envOr("AX_SNAPSHOT_SCOPE", string(substrate.SnapshotScopeFull)),
-		"What the snapshots of task ActorTemplates capture: \"full\" (memory, root filesystem and /workspace; a woken task carries on where it was) "+
-			"or \"data\" (only /workspace; a woken task restarts from its image). Applies to templates created from now on; $AX_SNAPSHOT_SCOPE sets the default")
+		"What the snapshots of task ActorTemplates capture: \"full\" (fidelity MEMORY: memory, root filesystem and /workspace; a woken task carries on where it was) "+
+			"or \"data\" (fidelity VOLUMES: only /workspace; a woken task restarts from its image). Applies to templates created from now on; $AX_SNAPSHOT_SCOPE sets the default")
 	flag.Parse()
 
 	scope, err := substrate.ParseSnapshotScope(snapshotScope)

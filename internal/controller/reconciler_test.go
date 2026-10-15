@@ -54,6 +54,10 @@ type mockControlServer struct {
 	egressPolicies    map[string]*ateapipb.EgressPolicy
 	lastTemplate      *ateapipb.ActorTemplate
 	createdTemplates  []*ateapipb.ActorTemplate
+	// crashedState is the state GetActor reports for crashedActor; zero
+	// means CRASHED.
+	crashedState ateapipb.ActorState
+	revertErr    error
 	// createTemplateErr, when set, is returned by CreateActorTemplate to stand in
 	// for Substrate rejecting a template (for example an invalid quantity).
 	createTemplateErr error
@@ -173,6 +177,9 @@ func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.Susp
 func (m *mockControlServer) RevertActor(_ context.Context, req *ateapipb.RevertActorRequest) (*ateapipb.RevertActorResponse, error) {
 	name := req.GetActor().GetName()
 	m.revertedActors = append(m.revertedActors, name)
+	if m.revertErr != nil {
+		return nil, m.revertErr
+	}
 	return &ateapipb.RevertActorResponse{Actor: &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{Name: name},
 		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
@@ -191,9 +198,13 @@ func (m *mockControlServer) GetActor(ctx context.Context, req *ateapipb.GetActor
 	}
 	name := req.GetActor().GetName()
 	if name == m.crashedActor {
+		state := m.crashedState
+		if state == ateapipb.ActorState_ACTOR_STATE_UNSPECIFIED {
+			state = ateapipb.ActorState_ACTOR_STATE_CRASHED
+		}
 		return &ateapipb.Actor{
 			Metadata: &ateapipb.ResourceMetadata{Name: name},
-			Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED},
+			Status:   &ateapipb.ActorStatus{State: state},
 		}, nil
 	}
 	for _, del := range m.deletedActors {
@@ -1129,4 +1140,57 @@ func TestTaskReconciler_TransientSubstrateUnavailable(t *testing.T) {
 		t.Errorf("expected Phase='Failed' on permanent error, got %q", reconciled4.GetStatus().GetPhase())
 	}
 	mockSrv.createActorErr = nil
+}
+
+func TestEnsureActor_ResumesInterruptedRevert(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		revertErr error
+		wantErr   bool
+	}{
+		{name: "revert finishes"},
+		{name: "revert fails", revertErr: status.Error(codes.Aborted, "concurrent update conflict"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to listen: %v", err)
+			}
+			defer lis.Close()
+
+			mockSrv := &mockControlServer{
+				crashedActor: "job",
+				crashedState: ateapipb.ActorState_ACTOR_STATE_REVERTING,
+				revertErr:    tc.revertErr,
+			}
+			grpcServer := grpc.NewServer()
+			ateapipb.RegisterControlServer(grpcServer, mockSrv)
+			go grpcServer.Serve(lis)
+			defer grpcServer.Stop()
+
+			client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatalf("failed to create substrate client: %v", err)
+			}
+			defer client.Close()
+
+			actor, err := client.EnsureActor(context.Background(), "default", "job", "default", "job-tmpl-0a1b2c3d")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("EnsureActor = %v, want an error", actor)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("EnsureActor failed: %v", err)
+				}
+				if got := actor.GetStatus().GetState(); got != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
+					t.Errorf("actor state = %v, want SUSPENDED", got)
+				}
+			}
+			// A reverting actor is never deleted: that would lose its workspace.
+			if len(mockSrv.revertedActors) != 1 || len(mockSrv.deletedActors) != 0 {
+				t.Errorf("reverting actor: reverted %v, deleted %v; want reverted only", mockSrv.revertedActors, mockSrv.deletedActors)
+			}
+		})
+	}
 }

@@ -104,6 +104,9 @@ func TestBuildActorTemplate_SnapshotScope(t *testing.T) {
 		if cfg.GetStorageLocation() != "gs://b/" {
 			t.Errorf("scope %q: storageLocation = %q", tc.scope, cfg.GetStorageLocation())
 		}
+		if got := cfg.GetGoldenSnapshotConfig().GetMode(); got != ateapipb.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_DISABLED {
+			t.Errorf("scope %q: golden snapshot mode = %v, want DISABLED", tc.scope, got)
+		}
 	}
 }
 
@@ -114,7 +117,7 @@ func TestParseSnapshotScope(t *testing.T) {
 			t.Errorf("ParseSnapshotScope(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"golden", "data_on_golden", "memory"} {
+	for _, in := range []string{"golden", "data_on_golden", "memory", "rootfs"} {
 		if _, err := ParseSnapshotScope(in); err == nil {
 			t.Errorf("ParseSnapshotScope(%q) succeeded, want error", in)
 		}

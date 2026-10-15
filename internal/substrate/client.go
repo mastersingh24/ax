@@ -274,6 +274,10 @@ const (
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
 
+	// sandboxClassGVisor is the sandbox class of every template AX creates.
+	// Agent Substrate v0.5 made sandbox_class a string (substrate#2586).
+	sandboxClassGVisor = "gvisor"
+
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
 	// (±50% jitter), the total wait across all attempts is roughly 6s-20s.
@@ -466,8 +470,8 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			WakeupProbe: &ateapipb.ContainerWakeupProbe{
-				HttpGet: &ateapipb.HTTPGetAction{
+			WakeupProbe: &ateapipb.WakeupProbe{
+				HttpGet: &ateapipb.HttpGetAction{
 					Path: "/readyz",
 					Port: 80,
 				},
@@ -480,9 +484,18 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation:   snapshotsBucket,
 			PreferredFidelity: scope.fidelity(),
+			// Every template AX creates belongs to one task, whose actor is
+			// created right after the template. Agent Substrate fixes an
+			// actor's boot source at creation and never switches it to a
+			// golden snapshot that becomes ready later, so a golden actor
+			// would only take a worker, run the task's command once more,
+			// and upload a snapshot nothing restores (substrate#2328).
+			GoldenSnapshotConfig: &ateapipb.GoldenSnapshotConfig{
+				Mode: ateapipb.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_DISABLED,
+			},
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
-			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
+			SandboxClass: sandboxClassGVisor,
 			ConfigName:   "gvisor-default",
 		},
 		Resources: resources,
@@ -539,7 +552,7 @@ func BuildEgressPolicy(atespace string, rules []*v1alpha1.EgressRule) *ateapipb.
 		if len(ports) == 0 {
 			ports = []int32{443}
 		}
-		https := &ateapipb.HTTPSRule{
+		https := &ateapipb.HttpsRule{
 			Hostnames: rule.GetHosts(),
 			Ports:     &ateapipb.Ports{Numbers: ports},
 		}
@@ -600,6 +613,24 @@ func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateA
 			existing, getErr := c.GetActor(ctx, atespace, actorName)
 			if getErr == nil && existing != nil {
 				state := existing.GetStatus().GetState()
+				if state == ateapipb.ActorState_ACTOR_STATE_REVERTING {
+					// A revert that was interrupted part way (Agent Substrate
+					// v0.5+). RevertActor picks up where it stopped. Unlike a
+					// crashed actor, don't fall back to deleting it: the
+					// revert may still be running, and deleting would lose
+					// the workspace. Retry on the next reconcile instead.
+					reverted, revertErr := c.control.RevertActor(ctx, &ateapipb.RevertActorRequest{
+						Actor: &ateapipb.ObjectRef{
+							Atespace: atespace,
+							Name:     actorName,
+						},
+					})
+					if revertErr != nil {
+						return nil, fmt.Errorf("actor %s/%s is reverting and the revert could not be resumed: %w", atespace, actorName, revertErr)
+					}
+					slog.Warn("existing actor was part way through a revert, finished it", "actor", actorName)
+					return reverted.GetActor(), nil
+				}
 				if state == ateapipb.ActorState_ACTOR_STATE_CRASHED {
 					// Revert to the last snapshot so the workspace survives the crash.
 					var reverted *ateapipb.RevertActorResponse

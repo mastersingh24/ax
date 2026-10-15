@@ -228,6 +228,9 @@ func TestBuildActorTemplate(t *testing.T) {
 	if snapCfg.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
 		t.Errorf("expected PreferredFidelity VOLUMES, got %v", snapCfg.GetPreferredFidelity())
 	}
+	if sc := tmpl.GetSandboxConfig(); sc.GetSandboxClass() != "gvisor" || sc.GetConfigName() != "gvisor-default" {
+		t.Errorf("unexpected sandboxConfig: %+v", sc)
+	}
 }
 
 func TestClient_ResumeActor_WorkerPodIpsAndRetry(t *testing.T) {

@@ -66,7 +66,7 @@ The task's `Ready` condition carries the reason. `ax resume`, or simply the next
 
 ## What a woken task looks like
 
-What a task looks like when it wakes depends on what its snapshots capture. `ax-server` sets that on every ActorTemplate it creates with `--snapshot-scope` (or `AX_SNAPSHOT_SCOPE`); see [Agent Substrate v0.4](substrate-v0.4.md) for the Substrate side.
+What a task looks like when it wakes depends on what its snapshots capture. `ax-server` sets that on every ActorTemplate it creates with `--snapshot-scope` (or `AX_SNAPSHOT_SCOPE`); it becomes the template's `snapshotConfig.preferredFidelity` (`full` is `MEMORY`, `data` is `VOLUMES`); see [Agent Substrate v0.5](substrate-v0.5.md) for the Substrate side.
 
 | | `full` (default) | `data` |
 |---|---|---|
@@ -82,10 +82,10 @@ The two differ for `onCompletion: Suspend`:
 - With `full`, the command is not run again. A request or `ax resume` that wakes a finished task finds it as it was when the command exited, which is what you want for looking at results or `ax ssh`. The runner reports `resumedAfterExit`, and instead of suspending the task on the spot the control plane waits until it has gone `spec.idle.suspendAfter` (five minutes when that is not set) without a request, then suspends it again with reason `CompletedSuspended`. To run the command again, create the task again.
 - With `data`, the runner starts afresh, so the command runs once more and the task is suspended again when it exits.
 
-Agent Substrate v0.3 restored data-only snapshots on top of the template's golden snapshot. v0.4 removed that mode (`onResume.fromData: GOLDEN`); `data` now always restarts from the image.
+Agent Substrate v0.3 restored data-only snapshots on top of the template's golden snapshot. v0.4 removed that mode (`onResume.fromData: GOLDEN`); `data` now always restarts from the image. `full` asks for `MEMORY`, which is a best-effort ceiling: under host pressure Substrate may save less, and the task then wakes as it would with `data`. Substrate's third fidelity, `ROOTFS`, needs a micro-VM sandbox, so AX doesn't offer it.
 
 A runner image built before this change has no status endpoint. The control plane then makes no decision for that task, so upgrading `ax-server` first is safe. A runner built before `resumedAfterExit` never reports it, so with full snapshots a finished `onCompletion: Suspend` task it runs is suspended again at the first check after it is woken; use a current runner image with `full`.
 
 ## Relation to Agent Substrate's worker-initiated suspend
 
-Agent Substrate (v0.3.0 and v0.4.0) has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.
+Agent Substrate (v0.3.0 through v0.5.0) has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.
