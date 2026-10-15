@@ -17,6 +17,7 @@ Port 80 speaks HTTP/1.1 and `h2c`. Agent Substrate and the AX server use it to c
 |---|---|---|---|
 | `/healthz` | `GET` | `text/plain` | Liveness. Always `200 OK`. |
 | `/readyz` | `GET` | `text/plain` | Readiness. `503` while the workspace is initializing, `200` once clones, MCP config, and skills are in place. |
+| `/metadata/v1alpha1/ax/status` | `GET` | `application/json` | Seconds since the last forwarded request, open requests, the task's busy answer, and whether the command has exited. AX reads it from outside the task to [suspend idle or finished tasks](idle-suspend.md). |
 
 ## Metadata server
 
@@ -26,7 +27,6 @@ Your agent can introspect its own configuration without any SDK. The metadata en
 |---|---|---|---|
 | `/metadata/v1alpha1/ax/task` | `GET` | `application/yaml` | Task launch configuration, excluding status. |
 | `/metadata/v1alpha1/ax/workspaces` | `GET` | `application/yaml` | Every bound `Workspace`, as a multi-document stream in binding order. |
-| `/metadata/v1alpha1/ax/status` | `GET` | `application/json` | Seconds since the last forwarded request, open requests, the task's busy answer, and whether the command has exited. AX reads it to [suspend idle or finished tasks](idle-suspend.md). |
 
 ```bash
 # From inside a task:
