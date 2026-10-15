@@ -169,8 +169,8 @@ func (r *TaskReconciler) CheckIdle(ctx context.Context, task *v1alpha1.Task) (*v
 		r.forgetRunning(key)
 		return task, false, nil
 	default:
-		// Resuming, crashed, deleting and so on: leave it to the next pass or
-		// to an explicit reconcile.
+		// Resuming, crashed, reverting, deleting and so on: leave it to the
+		// next pass or to an explicit reconcile.
 		return task, false, nil
 	}
 
