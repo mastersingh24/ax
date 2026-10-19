@@ -20,6 +20,22 @@ metadata:
     # Agent Substrate v0.5+ only lets labeled namespaces reach its API.
     ate.dev/api-access: "true"
 ---
+# Redis is ax's only store (tasks, workspaces, models), so it keeps its data on
+# a disk and writes an append-only file: a restarted pod must not forget them.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ax-redis-data
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-redis
+    app.kubernetes.io/part-of: ax
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,6 +46,9 @@ metadata:
     app.kubernetes.io/part-of: ax
 spec:
   replicas: 1
+  # The disk attaches to one pod at a time.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: ax-redis
@@ -41,6 +60,7 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          args: ["--appendonly", "yes", "--appendfsync", "everysec", "--dir", "/data"]
           ports:
             - containerPort: 6379
               name: redis
@@ -51,6 +71,13 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ax-redis-data
 ---
 apiVersion: v1
 kind: Service
