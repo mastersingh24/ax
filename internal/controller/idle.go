@@ -27,7 +27,7 @@ import (
 	"github.com/google/ax/internal/metadata"
 	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
 
 // Reasons recorded on the Ready condition by automatic suspension.
