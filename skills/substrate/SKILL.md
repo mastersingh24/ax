@@ -18,7 +18,7 @@ and `hack/setup-e2e-kind.sh` if they look stale.
 
 | Module | Pinned | Provides | Imported by |
 |---|---|---|---|
-| `go.ate.dev/substrate` | `v0.6.0` | Control API protos `pkg/proto/ateapipb` (atespaces, actor templates, actors, suspend/resume) | `internal/substrate`, `internal/server`, `internal/controller`, `test/e2e` |
+| `go.ate.dev/substrate` | `v1.0.0-rc.1` (this fork; see `go.mod`) | Control API protos `api/ateapi/v1`, imported as `ateapipb` (atespaces, actor templates, actors, suspend/resume) | `internal/substrate`, `internal/server`, `internal/controller`, `test/e2e` |
 | `github.com/agent-substrate/env` | `v0.0.11-0.20260912052224-4468a200b170` (pseudo-version) | Guest services served inside the sandbox (process exec + file system gRPC) and `proto/ateenv/v1alpha` | `internal/guest`, `internal/metadata` |
 
 There is no `replace` directive for either module. Local hacking against a
@@ -98,6 +98,15 @@ instead. No mocking library is in `go.mod`.
 - Guest services (process + fs) are mounted by `internal/metadata/server.go`
   only when `task.Spec.Debug` is true; `ax ssh` (`cmd/ax/main.go`) refuses to
   connect otherwise.
+- This fork's templates set no `SnapshotConfig.storage_location`: v1.0
+  forbids it without the `PerTemplateSnapshotLocation` preview gate, and
+  snapshots go to ate-api-server's `--snapshot-location`
+  (`BuildActorTemplate` in `internal/substrate/client.go`).
+- The router is mTLS-only from Substrate v0.6. The reconciler's
+  `newProbeHTTPClient` (pod-identity certificate, servicedns roots) is used
+  for every request through the router: workspace readiness, and the idle
+  check's runner status (`runnerStatus` / `routerURL` in
+  `internal/controller/idle.go`).
 - Readiness: Substrate and the reconciler probe the runner on port 80
   (`/healthz`, `/readyz?check=workspace`, served by `internal/metadata`);
   `/readyz` is 503 until all workspaces are materialized (`docs/sandbox.md`).
