@@ -411,6 +411,9 @@ func ValidateTask(t *Task) error {
 	if err := validateTaskHTTP(spec); err != nil {
 		return err
 	}
+	if err := validateTaskIdle(spec); err != nil {
+		return err
+	}
 	if err := ValidateTaskSize(t); err != nil {
 		return err
 	}
@@ -468,6 +471,13 @@ func validateTaskHTTP(spec *TaskSpec) error {
 			return fmt.Errorf("spec.http.port: %d is the runner's metadata port", port)
 		}
 	}
+	return nil
+}
+
+// validateTaskIdle checks spec.idle and spec.onCompletion, the fork's
+// automatic suspension. spec.idle needs spec.http.port, because idleness is
+// measured on the requests the runner forwards.
+func validateTaskIdle(spec *TaskSpec) error {
 	if idle := spec.GetIdle(); idle != nil {
 		if idle.GetSuspendAfter() == "" {
 			return errors.New("spec.idle.suspendAfter: is required")
