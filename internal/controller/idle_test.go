@@ -317,6 +317,24 @@ func TestCheckIdle_FallsBackToRouter(t *testing.T) {
 	}
 }
 
+// ATENET_ROUTER_ADDR is a URL in upstream's manifests
+// ("https://atenet-router...:443"). The fallback must use it as given
+// rather than prefixing another scheme.
+func TestCheckIdle_RouterAddrWithScheme(t *testing.T) {
+	h := newIdleHarness(t)
+	h.reconciler.RouterAddr = "http://" + h.workerIP + "/"
+	h.set(func(h *idleHarness) {
+		h.workerIP = "127.0.0.1:1"
+		h.status = metadata.RunnerStatus{Exited: true}
+	})
+	task := idleTask("routed-url", "Running")
+	task.Spec.OnCompletion = v1alpha1.OnCompletionSuspend
+
+	if _, changed := h.check(t, task); !changed || len(h.mock.suspendedActors) != 1 {
+		t.Fatal("a router address given as a URL was not usable for the status read")
+	}
+}
+
 // A worker address that swallows the request instead of refusing it (network
 // policy dropping traffic to worker pods) must not use up the router
 // fallback's time as well.
