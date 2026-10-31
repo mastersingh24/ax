@@ -198,20 +198,20 @@ type TaskSpec struct {
 	// egress lists the outbound destinations the task may reach. Agent Substrate
 	// denies an actor's outbound traffic unless its egress policy allows it, so a
 	// task without egress rules has no network beyond DNS.
-	Egress []*EgressRule `protobuf:"bytes,8,rep,name=egress,proto3" json:"egress,omitempty"`
+	Egress []*EgressRule `protobuf:"bytes,100,rep,name=egress,proto3" json:"egress,omitempty"`
 	// http forwards requests that reach the task through Agent Substrate's
 	// router to a server inside the task. The router only reaches the runner's
 	// port, so this is how a task serves its own API (an agent's session API,
 	// A2A, MCP, a webhook) to callers outside the sandbox.
-	Http *TaskHTTP `protobuf:"bytes,9,opt,name=http,proto3" json:"http,omitempty"`
+	Http *TaskHTTP `protobuf:"bytes,101,opt,name=http,proto3" json:"http,omitempty"`
 	// idle suspends the task automatically once it has been idle for a while,
 	// so a request-driven agent gives its worker back between requests. Agent
 	// Substrate's router resumes a suspended task on its next request.
-	Idle *TaskIdle `protobuf:"bytes,10,opt,name=idle,proto3" json:"idle,omitempty"`
+	Idle *TaskIdle `protobuf:"bytes,102,opt,name=idle,proto3" json:"idle,omitempty"`
 	// on_completion says what happens when spec.command exits: "Keep" (the
 	// default) leaves the task running so it stays inspectable, "Suspend"
 	// suspends it.
-	OnCompletion  string `protobuf:"bytes,11,opt,name=on_completion,json=onCompletion,proto3" json:"on_completion,omitempty"`
+	OnCompletion  string `protobuf:"bytes,103,opt,name=on_completion,json=onCompletion,proto3" json:"on_completion,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2646,11 +2646,10 @@ const file_pkg_apis_v1alpha1_ax_proto_rawDesc = "" +
 	"\tworkspace\x18\x05 \x01(\v2\x19.ax.v1alpha1.WorkspaceRefR\tworkspace\x12\x14\n" +
 	"\x05debug\x18\x06 \x01(\bR\x05debug\x12/\n" +
 	"\x06config\x18\a \x01(\v2\x17.google.protobuf.StructR\x06config\x12/\n" +
-	"\x06egress\x18\b \x03(\v2\x17.ax.v1alpha1.EgressRuleR\x06egress\x12)\n" +
-	"\x04http\x18\t \x01(\v2\x15.ax.v1alpha1.TaskHTTPR\x04http\x12)\n" +
-	"\x04idle\x18\n" +
-	" \x01(\v2\x15.ax.v1alpha1.TaskIdleR\x04idle\x12#\n" +
-	"\ron_completion\x18\v \x01(\tR\fonCompletion\"L\n" +
+	"\x06egress\x18d \x03(\v2\x17.ax.v1alpha1.EgressRuleR\x06egress\x12)\n" +
+	"\x04http\x18e \x01(\v2\x15.ax.v1alpha1.TaskHTTPR\x04http\x12)\n" +
+	"\x04idle\x18f \x01(\v2\x15.ax.v1alpha1.TaskIdleR\x04idle\x12#\n" +
+	"\ron_completion\x18g \x01(\tR\fonCompletion\"L\n" +
 	"\bTaskIdle\x12#\n" +
 	"\rsuspend_after\x18\x01 \x01(\tR\fsuspendAfter\x12\x1b\n" +
 	"\tbusy_path\x18\x02 \x01(\tR\bbusyPath\"\x1e\n" +
