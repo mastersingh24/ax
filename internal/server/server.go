@@ -595,14 +595,14 @@ func setActorStatus(task *v1alpha1.Task, actor *ateapipb.Actor, err error) {
 		slog.Warn("could not read task actor", "atespace", task.GetMetadata().GetAtespace(), "task", task.GetMetadata().GetName(), "error", err)
 		if !v1alpha1.IsAXPhase(st.Phase) {
 			st.Phase = v1alpha1.PhaseUnknown
-			setReady(task, "Unknown", v1alpha1.ReasonSubstrateUnavailable, err.Error())
+			setReady(task, "Unknown", v1alpha1.ReasonSubstrateUnavailable, err.Error(), timestamppb.Now())
 		}
 	case actor == nil:
 		// A task that finished provisioning always has an actor, so a missing one
 		// was removed outside AX.
 		if !v1alpha1.IsAXPhase(st.Phase) {
 			st.Phase = v1alpha1.PhaseFailed
-			setReady(task, "False", v1alpha1.ReasonActorNotFound, "The task's actor no longer exists on Substrate")
+			setReady(task, "False", v1alpha1.ReasonActorNotFound, "The task's actor no longer exists on Substrate", timestamppb.Now())
 		}
 	default:
 		st.Actor = actor.GetMetadata().GetName()
@@ -612,22 +612,29 @@ func setActorStatus(task *v1alpha1.Task, actor *ateapipb.Actor, err error) {
 		}
 		state := actor.GetStatus().GetState()
 		st.Phase = actorPhase(state)
+		// Substrate moves the actor's update time on every write, so Ready keeps
+		// its time across reads of an unchanged actor.
+		at := actor.GetMetadata().GetUpdateTime()
 		switch st.Phase {
 		case v1alpha1.PhaseRunning:
-			if conditionTrue(task, v1alpha1.ConditionWorkspaceReady) {
-				setReady(task, "True", v1alpha1.ReasonTaskRunning, "Task is running and its workspace is ready")
+			ws := condition(task, v1alpha1.ConditionWorkspaceReady)
+			if ws.GetUpdateTime().AsTime().After(at.AsTime()) {
+				at = ws.GetUpdateTime()
+			}
+			if ws.GetStatus() == "True" {
+				setReady(task, "True", v1alpha1.ReasonTaskRunning, "Task is running and its workspace is ready", at)
 			} else {
-				setReady(task, "False", v1alpha1.ReasonWorkspaceInitializing, "Waiting for workspace setup to complete")
+				setReady(task, "False", v1alpha1.ReasonWorkspaceInitializing, "Waiting for workspace setup to complete", at)
 			}
 		case v1alpha1.PhaseUnknown:
-			setReady(task, "Unknown", v1alpha1.PhaseUnknown, "Actor is in state "+state.String())
+			setReady(task, "Unknown", v1alpha1.PhaseUnknown, "Actor is in state "+state.String(), at)
 		default:
 			// The task is not ready, and its phase says why.
 			message := actor.GetStatus().GetCrash().GetMessage()
 			if message == "" {
 				message = "Actor is " + strings.ToLower(strings.TrimPrefix(state.String(), "ACTOR_STATE_"))
 			}
-			setReady(task, "False", st.Phase, message)
+			setReady(task, "False", st.Phase, message, at)
 		}
 	}
 }
@@ -652,27 +659,26 @@ func actorPhase(state ateapipb.ActorState) string {
 	}
 }
 
-// conditionTrue reports whether the task has the given condition with status
-// True.
-func conditionTrue(task *v1alpha1.Task, condType string) bool {
+// condition returns the task's condition of the given type, or nil.
+func condition(task *v1alpha1.Task, condType string) *v1alpha1.Condition {
 	for _, c := range task.GetStatus().GetConditions() {
 		if c.GetType() == condType {
-			return c.GetStatus() == "True"
+			return c
 		}
 	}
-	return false
+	return nil
 }
 
-// setReady sets the task's Ready condition. Its update time changes only when
-// the condition does, so that repeated reads report a stable timestamp.
-func setReady(task *v1alpha1.Task, condStatus, reason, message string) {
+// setReady sets the task's Ready condition. If the task already has the same
+// Ready condition, its update time is kept; otherwise it is set to at.
+func setReady(task *v1alpha1.Task, condStatus, reason, message string, at *timestamppb.Timestamp) {
 	for _, c := range task.Status.Conditions {
 		if c.GetType() != v1alpha1.ConditionReady {
 			continue
 		}
 		if c.Status != condStatus || c.Reason != reason || c.Message != message {
 			c.Status, c.Reason, c.Message = condStatus, reason, message
-			c.UpdateTime = timestamppb.Now()
+			c.UpdateTime = at
 		}
 		return
 	}
@@ -681,7 +687,7 @@ func setReady(task *v1alpha1.Task, condStatus, reason, message string) {
 		Status:     condStatus,
 		Reason:     reason,
 		Message:    message,
-		UpdateTime: timestamppb.Now(),
+		UpdateTime: at,
 	})
 }
 
