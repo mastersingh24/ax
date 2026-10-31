@@ -271,8 +271,7 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 }
 
 const (
-	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
-	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
+	DefaultGuestCommand = "/usr/local/bin/ax-task-runner"
 
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
@@ -414,7 +413,12 @@ func ResourceLimits(reqs *v1alpha1.ResourcesSpec) *ateapipb.ResourceRequirements
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
 // A nil resources applies DefaultCPUMillicores and DefaultMemoryBytes. An
 // empty scope means SnapshotScopeFull.
-func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *ateapipb.ResourceRequirements, scope SnapshotScope) *ateapipb.ActorTemplate {
+//
+// The template sets no snapshot storage location: Agent Substrate v1.0
+// stores snapshots under ate-api-server's --snapshot-location and forbids
+// a per-template location unless the PerTemplateSnapshotLocation preview
+// gate is on, which this fork does not use.
+func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, resources *ateapipb.ResourceRequirements, scope SnapshotScope) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
 	}
@@ -424,14 +428,6 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 	if len(command) == 0 {
 		command = []string{DefaultGuestCommand}
 	}
-	if snapshotsBucket == "" {
-		if envBucket := os.Getenv("AX_SNAPSHOTS_BUCKET"); envBucket != "" {
-			snapshotsBucket = envBucket
-		} else {
-			snapshotsBucket = DefaultSnapshotsBucket
-		}
-	}
-
 	// On clusters whose egress gateway intercepts TLS (Substrate's sdsmint
 	// mode), tasks must trust the gateway's CA to make any HTTPS request.
 	mitmTrust := os.Getenv("AX_EGRESS_MITM_TRUST_BUNDLE") == "true"
@@ -507,7 +503,6 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		// One fidelity ceiling covers every snapshot of an actor (pause and
 		// suspend). See SnapshotScope for the trade-off.
 		SnapshotConfig: &ateapipb.SnapshotConfig{
-			StorageLocation:   snapshotsBucket,
 			PreferredFidelity: scope.fidelity(),
 			// Every template AX creates belongs to one task, whose actor is
 			// created right after the template. Agent Substrate fixes an
@@ -545,7 +540,7 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 		}
 	}
 
-	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "", resources, c.SnapshotScope())
+	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, resources, c.SnapshotScope())
 	req := &ateapipb.CreateActorTemplateRequest{
 		ActorTemplate: tmpl,
 	}

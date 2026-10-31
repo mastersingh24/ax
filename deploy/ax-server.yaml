@@ -89,8 +89,6 @@ spec:
               value: "https://atenet-router.ate-system.svc.cluster.local:443"
             - name: AX_DEFAULT_TASK_IMAGE
               value: "${AX_DEFAULT_TASK_IMAGE}"
-            - name: AX_SNAPSHOTS_BUCKET
-              value: "gs://dberkov-gke-dev3/ate-env/"
             # full: a woken task resumes where it was (memory + rootfs + /workspace).
             # data: smaller snapshots; a woken task restarts from its image with /workspace restored.
             # See docs/idle-suspend.md.

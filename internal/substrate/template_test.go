@@ -36,7 +36,7 @@ func envValue(c *ateapipb.Container, name string) (string, bool) {
 
 func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "true")
-	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, "gs://b/", nil, "")
+	tmpl := BuildActorTemplate("default", "t", "img", map[string]string{"CURL_CA_BUNDLE": "/mine.pem"}, nil, nil, "")
 
 	var found bool
 	for _, v := range tmpl.GetVolumes() {
@@ -77,7 +77,7 @@ func TestBuildActorTemplate_EgressTrustBundle(t *testing.T) {
 
 func TestBuildActorTemplate_NoTrustBundleByDefault(t *testing.T) {
 	t.Setenv("AX_EGRESS_MITM_TRUST_BUNDLE", "")
-	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", nil, "")
+	tmpl := BuildActorTemplate("default", "t", "img", nil, nil, nil, "")
 	if got := len(tmpl.GetVolumes()); got != 1 {
 		t.Errorf("expected only the workspace volume, got %d", got)
 	}
@@ -95,12 +95,14 @@ func TestBuildActorTemplate_SnapshotScope(t *testing.T) {
 		{SnapshotScopeFull, ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY},
 		{SnapshotScopeData, ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES},
 	} {
-		cfg := BuildActorTemplate("default", "t", "img", nil, nil, "gs://b/", nil, tc.scope).GetSnapshotConfig()
+		cfg := BuildActorTemplate("default", "t", "img", nil, nil, nil, tc.scope).GetSnapshotConfig()
 		if cfg.GetPreferredFidelity() != tc.want {
 			t.Errorf("scope %q: preferredFidelity = %v, want %v", tc.scope, cfg.GetPreferredFidelity(), tc.want)
 		}
-		if cfg.GetStorageLocation() != "gs://b/" {
-			t.Errorf("scope %q: storageLocation = %q", tc.scope, cfg.GetStorageLocation())
+		// Substrate v1.0 forbids a per-template location without a preview
+		// gate; snapshots go to the cluster's --snapshot-location.
+		if cfg.GetStorageLocation() != "" {
+			t.Errorf("scope %q: storageLocation = %q, want none", tc.scope, cfg.GetStorageLocation())
 		}
 		if got := cfg.GetGoldenSnapshotConfig().GetMode(); got != ateapipb.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_DISABLED {
 			t.Errorf("scope %q: golden snapshot mode = %v, want DISABLED", tc.scope, got)

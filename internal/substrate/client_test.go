@@ -201,7 +201,7 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
 func TestBuildActorTemplate(t *testing.T) {
 	t.Setenv("AX_SNAPSHOTS_BUCKET", "gs://ate-snapshots/ax/")
 
-	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, "", nil, SnapshotScopeData)
+	tmpl := BuildActorTemplate("", "test-tmpl", "", map[string]string{"FOO": "BAR"}, nil, nil, SnapshotScopeData)
 	if tmpl.GetMetadata().GetAtespace() != "default" {
 		t.Errorf("expected default atespace, got %q", tmpl.GetMetadata().GetAtespace())
 	}
@@ -220,8 +220,10 @@ func TestBuildActorTemplate(t *testing.T) {
 	if snapCfg == nil {
 		t.Fatal("expected SnapshotConfig to be set")
 	}
-	if snapCfg.GetStorageLocation() != "gs://ate-snapshots/ax/" {
-		t.Errorf("expected StorageLocation gs://ate-snapshots/ax/, got %q", snapCfg.GetStorageLocation())
+	// The old AX_SNAPSHOTS_BUCKET no longer reaches the template: Substrate
+	// v1.0 rejects a per-template location without its preview gate.
+	if snapCfg.GetStorageLocation() != "" {
+		t.Errorf("StorageLocation = %q, want none even with AX_SNAPSHOTS_BUCKET set", snapCfg.GetStorageLocation())
 	}
 	if snapCfg.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
 		t.Errorf("expected PreferredFidelity VOLUMES, got %v", snapCfg.GetPreferredFidelity())
@@ -492,7 +494,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: 2000,
 		MemoryBytes:   4 << 30,
 	}}
-	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits, "")
+	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, limits, "")
 	if !proto.Equal(tmpl.GetResources(), limits) {
 		t.Fatalf("template resources = %v, want %v", tmpl.GetResources(), limits)
 	}
@@ -503,7 +505,7 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 		CpuMillicores: DefaultCPUMillicores,
 		MemoryBytes:   DefaultMemoryBytes,
 	}}
-	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil, "")
+	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, nil, "")
 	if !proto.Equal(tmpl.GetResources(), wantDefault) {
 		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
 	}
