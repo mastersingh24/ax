@@ -22,7 +22,8 @@ cmd/ax                 CLI (apply/get/describe/ssh/suspend/resume/delete/ctx/tun
 cmd/ax-server          Control plane: gRPC API; provisions, suspends, resumes and deletes task actors directly
 cmd/ax-task-runner     PID 1 inside the sandbox; materializes the Workspace, runs the agent
 internal/controller    TaskReconciler: Substrate side of task suspend/resume/delete; reconciler_test.go is the test template
-internal/server        gRPC handlers
+                       (fork: idle.go, CheckIdle for spec.idle / spec.onCompletion, recorded in the AutoSuspended condition)
+internal/server        gRPC handlers (fork: SuspendIdleTasks, the periodic idle pass, tested in idle_test.go)
 internal/store/        memory + postgres backends (schema.sql and schema.go change together)
 internal/substrate     The only place that talks to the Substrate Control API
 internal/workspace     git clone / inline files / skills dir (MCP is spec-only; agents read it via the metadata server)
