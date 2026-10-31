@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Errors makes calls to a Server fail. Each non-nil field is returned by the
@@ -151,6 +152,14 @@ func (s *Server) DeleteActorCalls() int {
 	return s.deleteActorCalls
 }
 
+// touch sets the actor's update time, as Substrate does on every write.
+func touch(actor *ateapipb.Actor) {
+	if actor.Metadata == nil {
+		actor.Metadata = &ateapipb.ResourceMetadata{}
+	}
+	actor.Metadata.UpdateTime = timestamppb.Now()
+}
+
 func key(atespace, name string) string {
 	return atespace + "/" + name
 }
@@ -245,6 +254,7 @@ func (s *Server) CreateActor(_ context.Context, req *ateapipb.CreateActorRequest
 	}
 	actor := proto.Clone(req.GetActor()).(*ateapipb.Actor)
 	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
+	touch(actor)
 	s.actors[k] = actor
 	return proto.Clone(actor).(*ateapipb.Actor), nil
 }
@@ -260,6 +270,7 @@ func (s *Server) SuspendActor(_ context.Context, req *ateapipb.SuspendActorReque
 		return nil, err
 	}
 	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
+	touch(actor)
 	return &ateapipb.SuspendActorResponse{}, nil
 }
 
@@ -274,6 +285,7 @@ func (s *Server) ResumeActor(_ context.Context, req *ateapipb.ResumeActorRequest
 		return nil, err
 	}
 	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING}
+	touch(actor)
 	if s.workerIP != "" {
 		actor.Status.WorkerAssignment = &ateapipb.WorkerAssignment{WorkerPod: "worker-pod-1", WorkerPodIps: []string{s.workerIP}}
 	}
@@ -290,6 +302,7 @@ func (s *Server) RevertActor(_ context.Context, req *ateapipb.RevertActorRequest
 		return nil, err
 	}
 	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
+	touch(actor)
 	return &ateapipb.RevertActorResponse{Actor: proto.Clone(actor).(*ateapipb.Actor)}, nil
 }
 
