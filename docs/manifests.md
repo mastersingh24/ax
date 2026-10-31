@@ -65,6 +65,40 @@ Inside the task, the command can read its config through the metadata server:
 curl -s "$AX_METADATA_URL/metadata/v1alpha1/ax/task" | yq .spec.config
 ```
 
+### Network access (`spec.egress`)
+
+*This fork only (mastersingh24/ax, upstream google/ax#449).* Agent Substrate denies an actor's outbound traffic unless its egress policy allows it, so a task without `spec.egress` can resolve DNS and nothing else. AX creates the actor's egress policy before the actor first runs.
+
+```yaml
+spec:
+  egress:
+    - hosts: [aiplatform.googleapis.com, container.googleapis.com]
+      ports: [443]                 # optional; 443 when empty
+      credentials:                 # optional; injected by the egress gateway
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
+```
+
+Each rule allows HTTPS to its `hosts` (a DNS name, or one with `*` as its leftmost label) on its `ports`. A `credentials` entry has the egress gateway replace that request header with the credential named by `credentialUri`, prefixed by `prefix`, so the task never holds the secret. The task sends the header with any placeholder value.
+
+### Serving an API (`spec.http`)
+
+*This fork only (upstream google/ax#501).* Agent Substrate's router delivers plain HTTP requests for a task to the runner on port 80. With `spec.http.port` set, the runner forwards every request it does not handle itself to that port on localhost, streaming responses and passing connection upgrades through. That is how an agent's own API (a session API, A2A, MCP, a webhook) is reached through the router. The port must be 1–65535 and not the runner's own ports (80, 8099).
+
+```yaml
+spec:
+  command: ["my-agent", "serve", "--listen=127.0.0.1:8484"]
+  http:
+    port: 8484
+```
+
+`/readyz` also waits until something accepts connections on that port, so a request that wakes a suspended task is held until the agent can answer it. A client can also reach any port in the actor through the router's CONNECT path; `spec.http.port` is for plain requests and for the readiness wait.
+
+### Automatic suspension (`spec.idle`, `spec.onCompletion`)
+
+*This fork only (upstream google/ax#420).* `spec.idle.suspendAfter` suspends a task after that long without a request through `spec.http.port`; `spec.onCompletion: Suspend` suspends it when its command exits. See [Automatic suspension](idle-suspend.md).
+
 ## Workspace
 
 ```yaml
