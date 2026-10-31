@@ -86,23 +86,27 @@ message TaskSpec {
   // It is stored in plain text and shown by `ax get task`, so it must not
   // hold secrets.
   google.protobuf.Struct config = 7;
+  // Fields 100 and up are this fork's own (mastersingh24/ax, see FORK.md).
+  // Upstream numbers TaskSpec fields from 1 upward, so the fork starts at 100
+  // and an upstream addition can never take one of its numbers again.
+
   // egress lists the outbound destinations the task may reach. Agent Substrate
   // denies an actor's outbound traffic unless its egress policy allows it, so a
   // task without egress rules has no network beyond DNS.
-  repeated EgressRule egress = 8;
+  repeated EgressRule egress = 100;
   // http forwards requests that reach the task through Agent Substrate's
   // router to a server inside the task. The router only reaches the runner's
   // port, so this is how a task serves its own API (an agent's session API,
   // A2A, MCP, a webhook) to callers outside the sandbox.
-  TaskHTTP http = 9;
+  TaskHTTP http = 101;
   // idle suspends the task automatically once it has been idle for a while,
   // so a request-driven agent gives its worker back between requests. Agent
   // Substrate's router resumes a suspended task on its next request.
-  TaskIdle idle = 10;
+  TaskIdle idle = 102;
   // on_completion says what happens when spec.command exits: "Keep" (the
   // default) leaves the task running so it stays inspectable, "Suspend"
   // suspends it.
-  string on_completion = 11;
+  string on_completion = 103;
 }
 
 // TaskIdle configures automatic suspension of an idle task. A task is idle
