@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/ax/internal/metadata"
@@ -220,7 +221,7 @@ func (r *TaskReconciler) runnerStatus(ctx context.Context, atespace, name, worke
 		// hangs, and sharing one deadline left the router fallback with
 		// none.
 		dctx, cancel := context.WithTimeout(ctx, directStatusTimeout)
-		st, err := r.getRunnerStatus(dctx, fmt.Sprintf("http://%s%s", net.JoinHostPort(host, port), metadata.StatusPath), "")
+		st, err := r.getRunnerStatus(dctx, r.statusClient, fmt.Sprintf("http://%s%s", net.JoinHostPort(host, port), metadata.StatusPath), "")
 		cancel()
 		if err == nil {
 			return st, nil
@@ -229,7 +230,10 @@ func (r *TaskReconciler) runnerStatus(ctx context.Context, atespace, name, worke
 	}
 	if r.RouterAddr != "" {
 		rctx, cancel := context.WithTimeout(ctx, runnerStatusTimeout)
-		st, err := r.getRunnerStatus(rctx, fmt.Sprintf("http://%s%s", r.RouterAddr, metadata.StatusPath), atespace+"/"+name)
+		// Through the router with the same mTLS client and URL rules as the
+		// workspace readiness check: Agent Substrate's router accepts only
+		// mTLS from v0.6, and ATENET_ROUTER_ADDR is usually an https URL.
+		st, err := r.getRunnerStatus(rctx, r.httpClient, routerURL(r.RouterAddr, metadata.StatusPath), atespace+"/"+name)
 		cancel()
 		if err == nil {
 			return st, nil
@@ -242,7 +246,21 @@ func (r *TaskReconciler) runnerStatus(ctx context.Context, atespace, name, worke
 	return metadata.RunnerStatus{}, fmt.Errorf("reading runner status: %v", errs)
 }
 
-func (r *TaskReconciler) getRunnerStatus(ctx context.Context, url, targetActor string) (metadata.RunnerStatus, error) {
+// routerURL joins path to the router address, adding a scheme the way
+// the workspace readiness check does: https for an address on port 443,
+// http otherwise, and none when the address already has one.
+func routerURL(addr, path string) string {
+	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+		if strings.HasSuffix(addr, ":443") {
+			addr = "https://" + addr
+		} else {
+			addr = "http://" + addr
+		}
+	}
+	return strings.TrimRight(addr, "/") + path
+}
+
+func (r *TaskReconciler) getRunnerStatus(ctx context.Context, client *http.Client, url, targetActor string) (metadata.RunnerStatus, error) {
 	var st metadata.RunnerStatus
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -251,7 +269,7 @@ func (r *TaskReconciler) getRunnerStatus(ctx context.Context, url, targetActor s
 	if targetActor != "" {
 		req.Header.Set("ate-target-actor", targetActor)
 	}
-	resp, err := r.statusClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return st, err
 	}

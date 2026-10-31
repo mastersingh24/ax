@@ -54,19 +54,26 @@ With full snapshots (the default, see below) a suspended task resumes with the r
 
 ## How the control plane applies it
 
-`ax-server` checks every task that sets `spec.idle` or `spec.onCompletion: Suspend` and is `Running` or `Suspended`, every `--idle-check-interval` (30 seconds by default; `0` turns it off). For each one, under the task's lock:
+`ax-server` checks every task that sets `spec.idle` or `spec.onCompletion: Suspend`, every `--idle-check-interval` (30 seconds by default; `0` turns it off). Tasks in one of AX's own phases (`Pending`, `Failed`, `Terminating`) are skipped. For each of the rest, under the task's lock and after re-reading it:
 
 1. It asks the Substrate control API for the actor's state. That call never wakes an actor.
-2. If the actor is suspended, the runner is not contacted. Asking a suspended task anything through the router would resume it, so this is the rule that keeps suspended tasks suspended. If AX had the task as `Running`, it is recorded as `Suspended` with reason `ActorSuspended`.
-3. If the actor is running but AX had the task as `Suspended`, the router resumed it for a request. The task is recorded as `Running` with reason `ResumedByRequest`, so `ax get` matches reality.
-4. For a running actor it reads the status endpoint, directly from the worker's address, or through the router with `ate-target-actor` if that address can't be reached. The actor was running a moment ago, so the router has nothing to wake.
-5. It suspends the actor when the command has exited and `onCompletion` is `Suspend` (reason `CompletedSuspended`, with the exit code in the message), or when the task has been idle for `suspendAfter`, has no open requests, and isn't busy (reason `IdleSuspended`).
+2. If the actor is suspended, the runner is not contacted: asking a suspended task anything through the router would resume it, so this is the rule that keeps suspended tasks suspended.
+3. For a running actor it reads the status endpoint, directly from the worker's address, or through the router with `ate-target-actor` if that address can't be reached. The actor was running a moment ago, so the router has nothing to wake.
+4. It suspends the actor when the command has exited and `onCompletion` is `Suspend` (reason `CompletedSuspended`, with the exit code in the message), or when the task has been idle for `suspendAfter`, has no open requests, and isn't busy (reason `IdleSuspended`).
 
-The task's `Ready` condition carries the reason. `ax resume`, or simply the next request through the router, brings it back.
+A task's phase (`Running`, `Suspended`) is not stored: `ax get` and `ax describe` read it from the actor every time, so a suspend, a wake by the router, or a change made on Substrate directly shows up at once. What AX records is *why* it suspended a task, in its own condition, `AutoSuspended`:
+
+| `AutoSuspended` | Meaning |
+|---|---|
+| `True`, reason `IdleSuspended` or `CompletedSuspended` | AX suspended the task automatically; the message says why. |
+| `False`, reason `ResumedByRequest` | AX had suspended it, and a request through the router woke it since. |
+| absent | AX never suspended the task automatically. |
+
+`ax resume`, or simply the next request through the router, brings a suspended task back.
 
 ## What a woken task looks like
 
-What a task looks like when it wakes depends on what its snapshots capture. `ax-server` sets that on every ActorTemplate it creates with `--snapshot-scope` (or `AX_SNAPSHOT_SCOPE`); it becomes the template's `snapshotConfig.preferredFidelity` (`full` is `MEMORY`, `data` is `VOLUMES`); see [Agent Substrate v0.5](substrate-v0.5.md) for the Substrate side.
+What a task looks like when it wakes depends on what its snapshots capture. `ax-server` sets that on every ActorTemplate it creates with `--snapshot-scope` (or `AX_SNAPSHOT_SCOPE`); it becomes the template's `snapshotConfig.preferredFidelity` (`full` is `MEMORY`, `data` is `VOLUMES`); see [Agent Substrate v1.0](substrate-v1.0.md) for the Substrate side.
 
 | | `full` (default) | `data` |
 |---|---|---|
@@ -82,10 +89,10 @@ The two differ for `onCompletion: Suspend`:
 - With `full`, the command is not run again. A request or `ax resume` that wakes a finished task finds it as it was when the command exited, which is what you want for looking at results or `ax ssh`. The runner reports `resumedAfterExit`, and instead of suspending the task on the spot the control plane waits until it has gone `spec.idle.suspendAfter` (five minutes when that is not set) without a request, then suspends it again with reason `CompletedSuspended`. To run the command again, create the task again.
 - With `data`, the runner starts afresh, so the command runs once more and the task is suspended again when it exits.
 
-Agent Substrate v0.3 restored data-only snapshots on top of the template's golden snapshot. v0.4 removed that mode (`onResume.fromData: GOLDEN`); `data` now always restarts from the image. `full` asks for `MEMORY`, which is a best-effort ceiling: under host pressure Substrate may save less, and the task then wakes as it would with `data`. Substrate's third fidelity, `ROOTFS`, needs a micro-VM sandbox, so AX doesn't offer it.
+`data` always restarts from the image. `full` asks for `MEMORY`, which is a best-effort ceiling: under host pressure Substrate may save less. Substrate v1.0 also restores a memory snapshot only on a worker whose CPU has the features the snapshot was taken with; when no such worker is free it falls back to `ROOTFS` (the root filesystem and volumes, with a fresh process). A woken task then looks like a `data` task that also kept its files outside `/workspace`. AX doesn't offer `ROOTFS` as a scope of its own.
 
 A runner image built before this change has no status endpoint. The control plane then makes no decision for that task, so upgrading `ax-server` first is safe. A runner built before `resumedAfterExit` never reports it, so with full snapshots a finished `onCompletion: Suspend` task it runs is suspended again at the first check after it is woken; use a current runner image with `full`.
 
 ## Relation to Agent Substrate's worker-initiated suspend
 
-Agent Substrate (v0.3.0 through v0.5.0) has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.
+Agent Substrate (v0.3.0 through v1.0) has the plumbing for a sandbox to ask for its own suspension (`RequestActorSuspend`, from the guest through atelet to the control plane), with no caller yet. Once the runner can reach it, it could make the same decision locally and drop the polling, with the control plane recording the result. The activity tracking, the busy check and the `spec.idle` API stay the same either way; only who pulls the trigger changes. Polling from `ax-server` works on every Substrate version AX supports today, which is why it comes first.
