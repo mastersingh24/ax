@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestServerHealthzHTTP(t *testing.T) {
@@ -642,6 +643,58 @@ func TestServer_ReadsActorStateFromSubstrate(t *testing.T) {
 		t.Fatalf("store GetTask: %v", err)
 	}
 	assertNoActorState(t, stored)
+}
+
+func TestServer_ReadyUpdateTimeFollowsActor(t *testing.T) {
+	st := memory.NewStore()
+	sub := substratetest.NewServer(t)
+	srv := server.NewServer(st, newTestReconciler(sub))
+	ctx := context.Background()
+
+	if _, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "ready-time"},
+		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+	}}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	setActor := func(state ateapipb.ActorState, updated time.Time) {
+		sub.SetActor(&ateapipb.Actor{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: "default", Name: "ready-time", UpdateTime: timestamppb.New(updated)},
+			Status:   &ateapipb.ActorStatus{State: state},
+		})
+	}
+	readyTime := func() time.Time {
+		t.Helper()
+		got, err := srv.GetTask(ctx, &v1alpha1.GetTaskRequest{Name: "ready-time"})
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		return readyCondition(got).GetUpdateTime().AsTime()
+	}
+
+	setActor(ateapipb.ActorState_ACTOR_STATE_SUSPENDED, base)
+	for i := range 2 {
+		if got := readyTime(); !got.Equal(base) {
+			t.Errorf("read %d: Ready updateTime = %v, want the actor's update time %v", i, got, base)
+		}
+	}
+
+	setActor(ateapipb.ActorState_ACTOR_STATE_RUNNING, base.Add(time.Minute))
+	if got, want := readyTime(), base.Add(time.Minute); !got.Equal(want) {
+		t.Errorf("after the actor changed, Ready updateTime = %v, want %v", got, want)
+	}
+
+	// A running task's Ready also follows WorkspaceReady, which can change later.
+	wsTime := base.Add(2 * time.Minute)
+	if err := st.UpdateTaskStatus(ctx, "default", "ready-time", &v1alpha1.TaskStatus{Conditions: []*v1alpha1.Condition{
+		{Type: v1alpha1.ConditionWorkspaceReady, Status: "True", UpdateTime: timestamppb.New(wsTime)},
+	}}); err != nil {
+		t.Fatalf("UpdateTaskStatus: %v", err)
+	}
+	if got := readyTime(); !got.Equal(wsTime) {
+		t.Errorf("after the workspace became ready, Ready updateTime = %v, want %v", got, wsTime)
+	}
 }
 
 func TestServer_CreateTask_InitialPhaseSuspended(t *testing.T) {
