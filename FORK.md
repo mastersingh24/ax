@@ -47,26 +47,29 @@ The fork also records an ax-owned status condition, `AutoSuspended`
 
 ## Patches
 
-As of the port onto upstream `f0228f1` (2026-10-28) and Substrate
+As of the rebase onto upstream `6e970c5` (2026-11-03) and Substrate
 v1.0.0-rc.1. Hashes change on every rebase; match patches by subject.
 
 | Patch | Commits | Upstream | Drop when |
 |---|---|---|---|
-| Tasks declare egress and injected credentials (`spec.egress`) | 3e2447a | google/ax#449 | ax creates the Substrate egress policy itself |
-| Substrate work and its status writes run on a context detached from the caller | b9dc57b | google/ax#452 | #452 is fixed |
-| A task serves its own API through the runner (`spec.http.port`); readiness waits for it | 55905d5, 512489d | google/ax#501 (the router's CONNECT path already reaches any actor port; the readiness wait is the part still missing) | upstream can route to, or wait for, a task's own port |
-| Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | 3f985ce, babe81f, 883f108, fb13d84, 7d13608, 7998552, 48700b6, e29b8e9, 14b0c58, b970f58 | google/ax#420 | upstream ships automatic suspension |
-| Resume tasks from memory snapshots (`--snapshot-scope full` → `MEMORY`), golden snapshots off for per-task templates, resume an interrupted `REVERTING` revert | f0d4230, 68a4ede | google/ax#443 (closed by #457, which uses `VOLUMES`) | upstream offers memory-snapshot resume |
-| Build against Substrate v1.0.0-rc.1 | eecb85f | — | upstream moves to v1.0 |
-| Templates set no snapshot storage location (v1.0 forbids one without the `PerTemplateSnapshotLocation` preview gate) | b7cd79d | not filed | upstream stops sending `storage_location` |
-| Fork-only proto fields at 100 and up | 909865a | — | with their patches |
-| Docs, AGENTS.md and the substrate skill | d08b125, ebb1d2c, a24a71c, a161f13, 91cfb6e | — | with their patches |
+| Tasks declare egress and injected credentials (`spec.egress`) | f45138c | google/ax#449; the `Gateway`/`TrafficPolicy` proposal google/ax#549 would cover it | ax creates the Substrate egress policy itself |
+| Substrate work and its status writes run on a context detached from the caller | 1e14606 | google/ax#452 | #452 is fixed |
+| A task serves its own API through the runner (`spec.http.port`); readiness waits for it | 2ed5c14, 2af7618 | google/ax#501, closed as a duplicate of #549 (ingress rules per task). The router's CONNECT path already reaches any actor port; the readiness wait is the part still missing | upstream can route to, or wait for, a task's own port |
+| Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | 3280357, 8b12f44, 02b0388, d633a8f, efdc147, 8f866a7, 053487d, a7b0a31, af0f685, abfbd3b | google/ax#420 | upstream ships automatic suspension |
+| Resume tasks from memory snapshots (`--snapshot-scope full` → `MEMORY`), golden snapshots off for per-task templates, resume an interrupted `REVERTING` revert | 09ae184, db49466 | google/ax#443 (closed by #457, which uses `VOLUMES`) | upstream offers memory-snapshot resume |
+| Keep the Ready condition's update time stable across reads: it takes the actor's `metadata.update_time` (or WorkspaceReady's, if later, for a running task) | 62fbc1e | google/ax#539 | upstream fixes #539 |
+| Fork-only proto fields at 100 and up | 70761e2 | — | with their patches |
+| Docs, AGENTS.md, the substrate skill, and this file | 0b44581, e3b4fe6, 5d9da59, 55e9e66, 48c65a1, a8af41f | — | with their patches |
 
-Dropped in this port because upstream now covers them: resource limits
-(#405), the runner ignoring unknown Task fields (#506, fixed our #503), Redis
-persistence (ax stores its state in Postgres, #515, which closed #442), and
-syncing the stored phase and worker address after a router wake (#515 reads
-both from Substrate on every get and list, which fixed our #502).
+Dropped in the 2026-11-03 rebase because upstream now covers them: building
+against Substrate v1.0.0-rc.1 (upstream #553), and templates setting no
+snapshot storage location (#553 leaves `storage_location` empty unless a
+bucket is passed, and ax never passes one).
+
+Dropped in the 2026-10-31 port: resource limits (#405), the runner ignoring
+unknown Task fields (#506, fixed our #503), Redis persistence (ax stores its
+state in Postgres, #515, which closed #442), and syncing the stored phase and
+worker address after a router wake (#515, which fixed our #502).
 
 ## Deploying
 
