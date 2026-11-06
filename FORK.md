@@ -2,7 +2,7 @@
 
 This is a fork of [google/ax](https://github.com/google/ax) that runs ax on
 [Agent Substrate](https://github.com/agent-substrate/substrate)
-**v1.0.0-rc.1** (`go.ate.dev/substrate`, `api/ateapi/v1`) for the
+**v1.0.0** (`go.ate.dev/substrate`, `api/ateapi/v1`) for the
 go-steer clusters (agent-substrate, shipmind-stage, shipmind-prod), which
 deploy it through go-steer/shipmind. google/ax doesn't take outside pull
 requests, so the changes live here and the asks go upstream as issues. Each
@@ -48,7 +48,7 @@ The fork also records an ax-owned status condition, `AutoSuspended`
 ## Patches
 
 As of the rebase onto upstream `6e970c5` (2026-11-03) and Substrate
-v1.0.0-rc.1. Hashes change on every rebase; match patches by subject.
+v1.0.0. Hashes change on every rebase; match patches by subject.
 
 | Patch | Commits | Upstream | Drop when |
 |---|---|---|---|
@@ -62,7 +62,7 @@ v1.0.0-rc.1. Hashes change on every rebase; match patches by subject.
 | Docs, AGENTS.md, the substrate skill, and this file | 0b44581, e3b4fe6, 5d9da59, 55e9e66, 48c65a1, a8af41f | — | with their patches |
 
 Dropped in the 2026-11-03 rebase because upstream now covers them: building
-against Substrate v1.0.0-rc.1 (upstream #553), and templates setting no
+against Substrate v1.0.0 (upstream #553), and templates setting no
 snapshot storage location (#553 leaves `storage_location` empty unless a
 bucket is passed, and ax never passes one).
 

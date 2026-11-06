@@ -1,6 +1,6 @@
 # Agent Substrate v1.0
 
-This fork of AX builds against `go.ate.dev/substrate` **v1.0.0-rc.1** and needs a v1.0 control plane. Coming from v0.5, Substrate is a fresh install: v1.0 moved its API to the `substrate.ateapi.v1` package, renumbered the proto fields and serves only `ate.dev/v1` CRDs, so nothing stored by a v0.5 install (actors, templates, snapshots) carries over. Upgrade `ax-server`, the task images and Substrate together. From v1.0 on, Substrate upgrades between minor versions in place.
+This fork of AX builds against `go.ate.dev/substrate` **v1.0.0** and needs a v1.0 control plane. Coming from v0.5, Substrate is a fresh install: v1.0 moved its API to the `substrate.ateapi.v1` package, renumbered the proto fields and serves only `ate.dev/v1` CRDs, so nothing stored by a v0.5 install (actors, templates, snapshots) carries over. Upgrade `ax-server`, the task images and Substrate together. From v1.0 on, Substrate upgrades between minor versions in place.
 
 ## What changed for AX
 
