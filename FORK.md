@@ -47,19 +47,19 @@ The fork also records an ax-owned status condition, `AutoSuspended`
 
 ## Patches
 
-As of the rebase onto upstream `6e970c5` (2026-11-03) and Substrate
+As of the rebase onto upstream `241bc4d` (2026-11-06) and Substrate
 v1.0.0. Hashes change on every rebase; match patches by subject.
 
 | Patch | Commits | Upstream | Drop when |
 |---|---|---|---|
-| Tasks declare egress and injected credentials (`spec.egress`) | f45138c | google/ax#449; the `Gateway`/`TrafficPolicy` proposal google/ax#549 would cover it | ax creates the Substrate egress policy itself |
-| Substrate work and its status writes run on a context detached from the caller | 1e14606 | google/ax#452 | #452 is fixed |
-| A task serves its own API through the runner (`spec.http.port`); readiness waits for it | 2ed5c14, 2af7618 | google/ax#501, closed as a duplicate of #549 (ingress rules per task). The router's CONNECT path already reaches any actor port; the readiness wait is the part still missing | upstream can route to, or wait for, a task's own port |
-| Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | 3280357, 8b12f44, 02b0388, d633a8f, efdc147, 8f866a7, 053487d, a7b0a31, af0f685, abfbd3b | google/ax#420 | upstream ships automatic suspension |
-| Resume tasks from memory snapshots (`--snapshot-scope full` → `MEMORY`), golden snapshots off for per-task templates, resume an interrupted `REVERTING` revert | 09ae184, db49466 | google/ax#443 (closed by #457, which uses `VOLUMES`) | upstream offers memory-snapshot resume |
-| Keep the Ready condition's update time stable across reads: it takes the actor's `metadata.update_time` (or WorkspaceReady's, if later, for a running task) | 62fbc1e | google/ax#539 | upstream fixes #539 |
-| Fork-only proto fields at 100 and up | 70761e2 | — | with their patches |
-| Docs, AGENTS.md, the substrate skill, and this file | 0b44581, e3b4fe6, 5d9da59, 55e9e66, 48c65a1, a8af41f | — | with their patches |
+| Tasks declare egress and injected credentials (`spec.egress`) | ba8043d | google/ax#449; the `Gateway`/`TrafficPolicy` proposal google/ax#549 would cover it | ax creates the Substrate egress policy itself |
+| Substrate work and its status writes run on a context detached from the caller | 8df0718 | google/ax#452 | #452 is fixed |
+| A task serves its own API through the runner (`spec.http.port`); readiness waits for it; forwarded requests carry the loopback Host, with the router's name in X-Forwarded-Host | cbc5b15, 63c1f74, b54ffea | google/ax#501, closed as a duplicate of #549 (ingress rules per task). The router's CONNECT path already reaches any actor port; the readiness wait is the part still missing | upstream can route to, or wait for, a task's own port |
+| Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | d55028d, 71deda2, 74ef46e, d2bce8e, 3536b9b, 2f7c16e, 0b9d757, 7b75b0a, 96daf35, 3185f6a | google/ax#420 | upstream ships automatic suspension |
+| Resume tasks from memory snapshots (`--snapshot-scope full` → `MEMORY`), golden snapshots off for per-task templates, resume an interrupted `REVERTING` revert | 03bbfc2, 7bc73e1 | google/ax#443 (closed by #457, which uses `VOLUMES`) | upstream offers memory-snapshot resume |
+| Keep the Ready condition's update time stable across reads: it takes the actor's `metadata.update_time` (or WorkspaceReady's, if later, for a running task) | 36b7135 | google/ax#539 | upstream fixes #539 |
+| Fork-only proto fields at 100 and up | cfb7642 | — | with their patches |
+| Docs, AGENTS.md, the substrate skill, and this file | 9b6d047, cda992d, c2d9109, 4a6b37b, 6c3c78a, da46aa2 | — | with their patches |
 
 Dropped in the 2026-11-03 rebase because upstream now covers them: building
 against Substrate v1.0.0 (upstream #553), and templates setting no
