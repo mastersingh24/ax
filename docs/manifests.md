@@ -93,6 +93,8 @@ spec:
     port: 8484
 ```
 
+Forwarded requests carry `Host: 127.0.0.1:<port>`, the address the agent listens on, rather than the router's name, which a loopback server guarding against DNS rebinding would refuse; the inbound host is kept in `X-Forwarded-Host` (appended to any value already there).
+
 `/readyz` also waits until something accepts connections on that port, so a request that wakes a suspended task is held until the agent can answer it. A client can also reach any port in the actor through the router's CONNECT path; `spec.http.port` is for plain requests and for the readiness wait.
 
 ### Automatic suspension (`spec.idle`, `spec.onCompletion`)

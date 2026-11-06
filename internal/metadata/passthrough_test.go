@@ -188,3 +188,113 @@ func TestMetadataServer_ReadyWaitsForTaskServer(t *testing.T) {
 		t.Errorf("/readyz once the task server listens = %d, want 200", got)
 	}
 }
+
+// startPassThrough serves backend on a loopback port and returns the base URL
+// of a runner whose spec.http.port forwards to it, plus the backend's port.
+func startPassThrough(t *testing.T, backend http.Handler) (string, int) {
+	t.Helper()
+	backendLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs := &http.Server{Handler: backend}
+	go bs.Serve(backendLis)
+	t.Cleanup(func() { bs.Close() })
+	backendPort := backendLis.Addr().(*net.TCPAddr).Port
+
+	runnerPort := freeLocalPort(t)
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "t", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Http: &v1alpha1.TaskHTTP{Port: int32(backendPort)}},
+	}
+	srv := metadata.NewServer(runnerPort, task, nil)
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Stop(context.Background()) })
+	return fmt.Sprintf("http://127.0.0.1:%d", runnerPort), backendPort
+}
+
+// The task's server sees the loopback Host it was dialed on, not the router's
+// name: a loopback server that guards against DNS rebinding refuses a foreign
+// Host. The router's name moves to X-Forwarded-Host.
+func TestMetadataServer_PassThroughSendsLoopbackHost(t *testing.T) {
+	type seen struct{ host, fwdHost string }
+	got := make(chan seen, 2)
+	base, backendPort := startPassThrough(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- seen{r.Host, r.Header.Get("X-Forwarded-Host")}
+	}))
+	wantHost := fmt.Sprintf("127.0.0.1:%d", backendPort)
+	const router = "atenet-router.ate-system.svc.cluster.local"
+
+	for _, tc := range []struct {
+		name, prior, wantFwd string
+	}{
+		{"no prior header", "", router},
+		{"appends to a prior header", "edge.example.com", "edge.example.com, " + router},
+	} {
+		req, _ := http.NewRequest(http.MethodGet, base+"/sessions", nil)
+		req.Host = router
+		if tc.prior != "" {
+			req.Header.Set("X-Forwarded-Host", tc.prior)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		resp.Body.Close()
+		s := <-got
+		if s.host != wantHost {
+			t.Errorf("%s: backend saw Host %q, want %q", tc.name, s.host, wantHost)
+		}
+		if s.fwdHost != tc.wantFwd {
+			t.Errorf("%s: backend saw X-Forwarded-Host %q, want %q", tc.name, s.fwdHost, tc.wantFwd)
+		}
+	}
+}
+
+// A connection upgrade still passes through, with the loopback Host.
+func TestMetadataServer_PassThroughForwardsUpgrades(t *testing.T) {
+	hostSeen := make(chan string, 1)
+	base, backendPort := startPassThrough(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostSeen <- r.Host
+		if r.Header.Get("Upgrade") != "echo" {
+			http.Error(w, "expected an upgrade", http.StatusBadRequest)
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprint(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		rw.Flush()
+		line, _ := rw.ReadString('\n')
+		fmt.Fprint(rw, "echo: "+line)
+		rw.Flush()
+	}))
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	fmt.Fprint(conn, "GET /ws HTTP/1.1\r\nHost: atenet-router.ate-system.svc\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if h := <-hostSeen; h != fmt.Sprintf("127.0.0.1:%d", backendPort) {
+		t.Errorf("upgrade reached the backend with Host %q", h)
+	}
+	fmt.Fprint(conn, "hello\n")
+	line, err := br.ReadString('\n')
+	if err != nil || line != "echo: hello\n" {
+		t.Fatalf("after upgrade got %q, %v", line, err)
+	}
+}
