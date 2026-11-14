@@ -58,8 +58,9 @@ v1.0.0. Hashes change on every rebase; match patches by subject.
 | Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | d55028d, 71deda2, 74ef46e, d2bce8e, 3536b9b, 2f7c16e, 0b9d757, 7b75b0a, 96daf35, 3185f6a | google/ax#420 | upstream ships automatic suspension |
 | Resume tasks from memory snapshots (`--snapshot-scope full` → `MEMORY`), golden snapshots off for per-task templates, resume an interrupted `REVERTING` revert | 03bbfc2, 7bc73e1 | google/ax#443 (closed by #457, which uses `VOLUMES`) | upstream offers memory-snapshot resume |
 | Keep the Ready condition's update time stable across reads: it takes the actor's `metadata.update_time` (or WorkspaceReady's, if later, for a running task) | 36b7135 | google/ax#539 | upstream fixes #539 |
+| Suspend task actors off draining workers synchronously (`--drain-check-interval`, `AutoSuspended=WorkerDraining` with requests in flight), keep the runner alive through the worker's first `SIGTERM` (`AX_RUNNER_SIGTERM_GRACE`), and revert actors that crashed because their worker went away (`RevertedAfterWorkerLoss`). See docs/worker-drain.md | 388bbb7, a9b12d0, d8edb9a, 99e6a07, ab5aefb | mastersingh24/ax#1; agent-substrate/substrate#1707 (Substrate suspends on eviction) and #3818 (drain state for atespace-scoped drivers) | Substrate suspends actors on eviction itself (#1707), or upstream ax ships the same |
 | Fork-only proto fields at 100 and up | cfb7642 | — | with their patches |
-| Docs, AGENTS.md, the substrate skill, and this file | 9b6d047, cda992d, c2d9109, 4a6b37b, 6c3c78a, da46aa2 | — | with their patches |
+| Docs, AGENTS.md, the substrate skill, and this file | 9b6d047, cda992d, c2d9109, 4a6b37b, 6c3c78a, da46aa2, 9d9365a | — | with their patches |
 
 Dropped in the 2026-11-03 rebase because upstream now covers them: building
 against Substrate v1.0.0 (upstream #553), and templates setting no
