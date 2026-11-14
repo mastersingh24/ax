@@ -766,6 +766,124 @@ func (c *Client) SuspendActor(ctx context.Context, atespace, actorName string) e
 	return nil
 }
 
+// SuspendActorSynchronous suspends the actor and returns only once its
+// snapshot is in durable storage (DURABILITY_MODE_SYNCHRONOUS). It is for an
+// actor whose node is going away: an asynchronous suspend returns once the
+// snapshot is on the node, and the upload can be lost with it.
+func (c *Client) SuspendActorSynchronous(ctx context.Context, atespace, actorName string) error {
+	req := &ateapipb.SuspendActorRequest{
+		Actor: &ateapipb.ObjectRef{
+			Atespace: atespace,
+			Name:     actorName,
+		},
+		Options: &ateapipb.SuspendOptions{Mode: ateapipb.DurabilityMode_DURABILITY_MODE_SYNCHRONOUS},
+	}
+	err := retryOnCodes(ctx, func() error {
+		_, err := c.control.SuspendActor(ctx, req)
+		return err
+	}, codes.Aborted, codes.Unavailable)
+	if err != nil {
+		return fmt.Errorf("suspending actor %s/%s synchronously: %w", atespace, actorName, err)
+	}
+	return nil
+}
+
+// RevertActor returns a CRASHED actor to SUSPENDED with its latest snapshot.
+func (c *Client) RevertActor(ctx context.Context, atespace, actorName string) (*ateapipb.Actor, error) {
+	req := &ateapipb.RevertActorRequest{
+		Actor: &ateapipb.ObjectRef{
+			Atespace: atespace,
+			Name:     actorName,
+		},
+	}
+	var resp *ateapipb.RevertActorResponse
+	err := retryOnCodes(ctx, func() error {
+		var err error
+		resp, err = c.control.RevertActor(ctx, req)
+		return err
+	}, codes.Aborted, codes.Unavailable)
+	if err != nil {
+		return nil, fmt.Errorf("reverting actor %s/%s: %w", atespace, actorName, err)
+	}
+	return resp.GetActor(), nil
+}
+
+// ListDrainingWorkers returns the Workers in WORKER_STATE_DRAINING. A worker
+// enters that state when its pod starts terminating (a node drain, a rollout,
+// a scale-down) and never leaves it; Agent Substrate then gives the actors it
+// hosts SIGTERM and a grace period to be suspended, and does not suspend them
+// itself.
+func (c *Client) ListDrainingWorkers(ctx context.Context) ([]*ateapipb.Worker, error) {
+	var draining []*ateapipb.Worker
+	req := &ateapipb.ListWorkersRequest{Options: &ateapipb.ListOptions{}}
+	for {
+		var resp *ateapipb.ListWorkersResponse
+		err := retryOnCodes(ctx, func() error {
+			var err error
+			resp, err = c.control.ListWorkers(ctx, req)
+			return err
+		}, codes.Unavailable)
+		if err != nil {
+			return nil, fmt.Errorf("listing workers: %w", err)
+		}
+		for _, w := range resp.GetWorkers() {
+			if w.GetStatus().GetState() == ateapipb.WorkerState_WORKER_STATE_DRAINING {
+				draining = append(draining, w)
+			}
+		}
+		if resp.GetNextPageToken() == "" {
+			return draining, nil
+		}
+		req.Options.PageToken = resp.GetNextPageToken()
+	}
+}
+
+// ListWorkerActors returns the actors assigned to a Worker.
+func (c *Client) ListWorkerActors(ctx context.Context, worker *ateapipb.Worker) ([]*ateapipb.ObjectRef, error) {
+	var actors []*ateapipb.ObjectRef
+	req := &ateapipb.ListWorkerActorAssignmentsRequest{
+		Worker:  &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()},
+		Options: &ateapipb.ListOptions{},
+	}
+	for {
+		var resp *ateapipb.ListWorkerActorAssignmentsResponse
+		err := retryOnCodes(ctx, func() error {
+			var err error
+			resp, err = c.control.ListWorkerActorAssignments(ctx, req)
+			return err
+		}, codes.Unavailable)
+		if err != nil {
+			return nil, fmt.Errorf("listing actors of worker %s: %w", worker.GetMetadata().GetName(), err)
+		}
+		for _, a := range resp.GetActorAssignments() {
+			if a.GetActor() != nil {
+				actors = append(actors, a.GetActor())
+			}
+		}
+		if resp.GetNextPageToken() == "" {
+			return actors, nil
+		}
+		req.Options.PageToken = resp.GetNextPageToken()
+	}
+}
+
+// workerLossCrashMessages are the ActorCrash messages Agent Substrate v1.0
+// records when an actor crashed because the worker hosting it went away, not
+// because of anything the actor did (cmd/ateapi/internal/controlapi/crash.go
+// at v1.0.0). Substrate exposes no crash reason code, only this text.
+var workerLossCrashMessages = map[string]bool{
+	"worker pod went away while hosting the actor": true, // DeleteWorker on a drained or deleted worker
+	"worker restarted while hosting the actor":     true, // the worker process restarted under the actor
+	"assigned worker is draining":                  true, // a resume landed on a worker that started draining
+}
+
+// IsWorkerLossCrash reports whether a CRASHED actor crashed because its
+// worker went away, which reverting to the latest snapshot recovers from.
+func IsWorkerLossCrash(actor *ateapipb.Actor) bool {
+	st := actor.GetStatus()
+	return st.GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED && workerLossCrashMessages[st.GetCrash().GetMessage()]
+}
+
 // GetActor fetches an Actor by name.
 func (c *Client) GetActor(ctx context.Context, atespace, actorName string) (*ateapipb.Actor, error) {
 	req := &ateapipb.GetActorRequest{

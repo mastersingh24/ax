@@ -19,6 +19,7 @@ package substratetest
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 
@@ -41,6 +42,7 @@ type Errors struct {
 	SuspendActor   error
 	ResumeActor    error
 	DeleteActor    error
+	RevertActor    error
 }
 
 // Server is an in-memory Agent Substrate control API. It keeps atespaces,
@@ -60,6 +62,11 @@ type Server struct {
 	errs             Errors
 	onDeleteActor    func()
 	deleteActorCalls int
+
+	workers      map[string]*ateapipb.Worker // by name
+	assignments  map[string][]string         // worker name -> actor keys
+	suspendModes map[string][]ateapipb.DurabilityMode
+	revertCalls  map[string]int
 }
 
 // NewServer starts a Server with nothing in it. It stops when the test ends.
@@ -69,6 +76,11 @@ func NewServer(tb testing.TB) *Server {
 		atespaces: make(map[string]*ateapipb.Atespace),
 		templates: make(map[string]*ateapipb.ActorTemplate),
 		actors:    make(map[string]*ateapipb.Actor),
+
+		workers:      make(map[string]*ateapipb.Worker),
+		assignments:  make(map[string][]string),
+		suspendModes: make(map[string][]ateapipb.DurabilityMode),
+		revertCalls:  make(map[string]int),
 	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -121,6 +133,40 @@ func (s *Server) SetActor(actor *ateapipb.Actor) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.actors[key(actor.GetMetadata().GetAtespace(), actor.GetMetadata().GetName())] = proto.Clone(actor).(*ateapipb.Actor)
+}
+
+// SetWorker stores a Worker with the given name and state, replacing any of
+// the same name.
+func (s *Server) SetWorker(name string, state ateapipb.WorkerState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workers[name] = &ateapipb.Worker{
+		Metadata: &ateapipb.ResourceMetadata{Name: name},
+		Status:   &ateapipb.WorkerStatus{State: state},
+	}
+}
+
+// AssignActor records that the named actor is placed on the named worker, as
+// ListWorkerActorAssignments reports it.
+func (s *Server) AssignActor(worker, atespace, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assignments[worker] = append(s.assignments[worker], key(atespace, name))
+}
+
+// SuspendModes returns the durability mode of every SuspendActor call made
+// for the named actor, in order.
+func (s *Server) SuspendModes(atespace, name string) []ateapipb.DurabilityMode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ateapipb.DurabilityMode(nil), s.suspendModes[key(atespace, name)]...)
+}
+
+// RevertCalls returns how many times RevertActor was called for the named actor.
+func (s *Server) RevertCalls(atespace, name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revertCalls[key(atespace, name)]
 }
 
 // Actor returns a copy of the named actor, if it exists.
@@ -269,9 +315,11 @@ func (s *Server) SuspendActor(_ context.Context, req *ateapipb.SuspendActorReque
 	if err != nil {
 		return nil, err
 	}
+	k := key(req.GetActor().GetAtespace(), req.GetActor().GetName())
+	s.suspendModes[k] = append(s.suspendModes[k], req.GetOptions().GetMode())
 	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
 	touch(actor)
-	return &ateapipb.SuspendActorResponse{}, nil
+	return &ateapipb.SuspendActorResponse{Actor: proto.Clone(actor).(*ateapipb.Actor)}, nil
 }
 
 func (s *Server) ResumeActor(_ context.Context, req *ateapipb.ResumeActorRequest) (*ateapipb.ResumeActorResponse, error) {
@@ -297,6 +345,10 @@ func (s *Server) ResumeActor(_ context.Context, req *ateapipb.ResumeActorRequest
 func (s *Server) RevertActor(_ context.Context, req *ateapipb.RevertActorRequest) (*ateapipb.RevertActorResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.revertCalls[key(req.GetActor().GetAtespace(), req.GetActor().GetName())]++
+	if s.errs.RevertActor != nil {
+		return nil, s.errs.RevertActor
+	}
 	actor, err := s.lookupActor(req.GetActor())
 	if err != nil {
 		return nil, err
@@ -350,6 +402,36 @@ func (s *Server) ListActors(_ context.Context, req *ateapipb.ListActorsRequest) 
 		if req.GetAtespace() == "" || actor.GetMetadata().GetAtespace() == req.GetAtespace() {
 			resp.Actors = append(resp.Actors, proto.Clone(actor).(*ateapipb.Actor))
 		}
+	}
+	return resp, nil
+}
+
+// ListWorkers returns every Worker in one page.
+func (s *Server) ListWorkers(_ context.Context, _ *ateapipb.ListWorkersRequest) (*ateapipb.ListWorkersResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resp := &ateapipb.ListWorkersResponse{}
+	for _, w := range s.workers {
+		resp.Workers = append(resp.Workers, proto.Clone(w).(*ateapipb.Worker))
+	}
+	return resp, nil
+}
+
+// ListWorkerActorAssignments returns the actors AssignActor placed on the worker.
+func (s *Server) ListWorkerActorAssignments(_ context.Context, req *ateapipb.ListWorkerActorAssignmentsRequest) (*ateapipb.ListWorkerActorAssignmentsResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	worker := req.GetWorker().GetName()
+	if _, ok := s.workers[worker]; !ok {
+		return nil, status.Errorf(codes.NotFound, "worker %q not found", worker)
+	}
+	resp := &ateapipb.ListWorkerActorAssignmentsResponse{}
+	for _, k := range s.assignments[worker] {
+		atespace, name, _ := strings.Cut(k, "/")
+		resp.ActorAssignments = append(resp.ActorAssignments, &ateapipb.ActorAssignment{
+			Metadata: &ateapipb.ResourceMetadata{Name: k},
+			Actor:    &ateapipb.ObjectRef{Atespace: atespace, Name: name},
+		})
 	}
 	return resp, nil
 }
