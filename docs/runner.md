@@ -48,7 +48,7 @@ The `/workspace` volume always survives suspend and resume. What else does depen
 
 **Stay up after the command exits.** The runner is PID 1, and the container lives as long as it does. If the runner exits when the command does, the metadata server goes with it and `ax ssh` stops working. Log the exit status and keep serving until you are told to stop. Report the exit on the status endpoint; the control plane reads it to apply `spec.onCompletion`.
 
-**Shut down cleanly on `SIGTERM`.** Stop and suspend both deliver `SIGTERM` to PID 1. Forward it to the command's process group, wait a bounded grace period, then `SIGKILL` whatever is left. Flush anything the agent needs to survive a resume before you exit.
+**Don't stop at the first `SIGTERM`.** A draining Agent Substrate worker sends PID 1 `SIGTERM` and allows 30 minutes for the actor to be suspended; AX suspends it within seconds (see [Worker drain](worker-drain.md)). If the runner stops the command then, the suspend snapshots a task that is already gone. Keep the command running, stop it if no suspend has come by the end of a grace period, and stop at once on `SIGINT` or a second `SIGTERM`. When you stop, forward `SIGTERM` to the command's process group, wait a bounded grace period, then `SIGKILL` whatever is left. Substrate's own terminate path sends `SIGKILL` directly.
 
 **Serve guest services only when asked.** When `spec.debug` is true, the runner should also serve the [Agent Substrate guest services](https://github.com/agent-substrate/env) over gRPC on port 80, multiplexed with the HTTP endpoints using `h2c`. This is what `ax ssh` connects to. When `spec.debug` is false, leave them off. They allow arbitrary process execution and file access inside the sandbox, and `ax ssh` refuses to connect to a task that has not opted in.
 
@@ -94,6 +94,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -115,7 +116,13 @@ func main() {
 		_ = yaml.Unmarshal([]byte(raw), ws)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	grace, err := runner.SIGTERMGrace() // AX_RUNNER_SIGTERM_GRACE, 25m by default
+	if err != nil {
+		log.Fatal(err)
+	}
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := runner.ShutdownContext(context.Background(), sigs, grace)
 	defer stop()
 
 	err := runner.Run(ctx, runner.Config{
@@ -181,5 +188,5 @@ Once the image is built, the fastest end-to-end check is a task with `debug: tru
 - Prepares the workspace exactly once across restarts and resumes, at its path
 - Starts `spec.command` in the workspace with `AX_METADATA_URL` and `spec.env`
 - Keeps running after the command exits
-- Forwards `SIGTERM` to the command's process group and exits after a grace period
+- Keeps the command running through a draining worker's first `SIGTERM` for `AX_RUNNER_SIGTERM_GRACE` (`25m`), so it can be suspended; stops at once on `SIGINT` or a second `SIGTERM`, then forwards `SIGTERM` to the command's process group and exits after a grace period
 - Serves guest gRPC services on port 80 only when `spec.debug` is true

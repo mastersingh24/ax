@@ -66,6 +66,7 @@ A task's phase (`Running`, `Suspended`) is not stored: `ax get` and `ax describe
 | `AutoSuspended` | Meaning |
 |---|---|
 | `True`, reason `IdleSuspended` or `CompletedSuspended` | AX suspended the task automatically; the message says why. |
+| `True`, reason `WorkerDraining` or `RevertedAfterWorkerLoss` | AX suspended the task because its worker was draining, or reverted it after its worker went away. Any task can get these, not only one with `spec.idle`; see [Worker drain](worker-drain.md). |
 | `False`, reason `ResumedByRequest` | AX had suspended it, and a request through the router woke it since. |
 | absent | AX never suspended the task automatically. |
 

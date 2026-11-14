@@ -142,6 +142,7 @@ Want to see the whole lifecycle end to end? Run [`./demo.sh`](demo.sh). It appli
 | [Runners](docs/runner.md) | Understand the contract between the control plane and the task container, and build your own runner image to replace the default. |
 | [Networking](docs/networking.md) | Reach a running task through the atenet router from the cluster, your laptop, or a gRPC client. |
 | [Automatic suspension](docs/idle-suspend.md) | Have AX suspend a task when it goes idle or its command exits, and let the next request resume it. |
+| [Worker drain](docs/worker-drain.md) | See how AX keeps awake tasks alive through node upgrades and drains, and what the runner does with `SIGTERM`. |
 | [Agent Substrate v1.0](docs/substrate-v1.0.md) | What changed with Substrate v1.0 for this fork, and upgrading from the v0.5 fork. |
 | [Architecture](DESIGN.md) | Understand how the control plane fits together, plus the [API reference](DESIGN.md#api-reference). |
 | [Development](docs/development.md) | Build, test, and ship changes to AX itself. |

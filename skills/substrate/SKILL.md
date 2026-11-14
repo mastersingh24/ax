@@ -37,7 +37,9 @@ All Control API traffic goes through this package. It encapsulates:
 - **Retry** — `IsTransientError` + `retryOnCodes` for `Unavailable`-class errors.
 - **Helpers** the reconciler relies on — `EnsureAtespace`, `EnsureActorTemplateWithImage`,
   `EnsureActor`, `SuspendActor`, `ResumeActor`, `DeleteActor`, `WorkerIP`,
-  `ResourceLimits`, `BuildActorTemplate`.
+  `ResourceLimits`, `BuildActorTemplate`; for worker drain (fork),
+  `SuspendActorSynchronous`, `RevertActor`, `ListDrainingWorkers`,
+  `ListWorkerActors`, `IsWorkerLossCrash`.
 
 ### Where a new Control API call lives today
 
@@ -110,6 +112,16 @@ instead. No mocking library is in `go.mod`.
 - Readiness: Substrate and the reconciler probe the runner on port 80
   (`/healthz`, `/readyz?check=workspace`, served by `internal/metadata`);
   `/readyz` is 503 until all workspaces are materialized (`docs/sandbox.md`).
+- Worker drain (fork, `docs/worker-drain.md`): `DrainWorker` only stops new
+  placements; the worker sends the actor's PID 1 (`ax-task-runner`) `SIGTERM`
+  and kills it 30 minutes later, and `DeleteWorker` then leaves the actor
+  `CRASHED`, which only `RevertActor` undoes. Nothing in Substrate suspends it.
+  ax-server does (`HandleWorkerLoss` / `RunDrainWatcher` in
+  `internal/server/drain.go`, `--drain-check-interval`), which needs the global
+  owner role to call `ListWorkers`. The crash cause is only free text in
+  `ActorCrash.message`; `workerLossCrashMessages` in
+  `internal/substrate/client.go` lists the v1.0 texts and must be re-checked
+  on every Substrate bump (`cmd/ateapi/internal/controlapi` in Substrate).
 - Snapshot storage: Actor templates created by AX leave `SnapshotConfig.StorageLocation`
   empty by default so Substrate uses its cluster-wide `--snapshot-location`. Specifying a custom
   snapshot bucket (`snapshotsBucket` in `BuildActorTemplate`) can only be used when the
