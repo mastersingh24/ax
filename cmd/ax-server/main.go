@@ -49,6 +49,7 @@ func main() {
 		defaultTemplateAtespace string
 		defaultTaskImage        string
 		idleCheckInterval       time.Duration
+		drainCheckInterval      time.Duration
 		snapshotScope           string
 	)
 
@@ -64,6 +65,7 @@ func main() {
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", v1alpha1.DefaultSystemNamespace, "Default Substrate ActorTemplate atespace")
 	flag.StringVar(&defaultTaskImage, "default-task-image", v1alpha1.DefaultTaskImage, "Container image for tasks that do not set spec.image (env: AX_DEFAULT_TASK_IMAGE)")
 	flag.DurationVar(&idleCheckInterval, "idle-check-interval", 30*time.Second, "How often to check tasks with spec.idle or spec.onCompletion: Suspend for automatic suspension; 0 disables it")
+	flag.DurationVar(&drainCheckInterval, "drain-check-interval", 10*time.Second, "How often to look for Agent Substrate workers that are draining, suspend the task actors they host, and revert task actors that crashed because their worker went away; 0 disables it")
 	flag.StringVar(&snapshotScope, "snapshot-scope", envOr("AX_SNAPSHOT_SCOPE", string(substrate.SnapshotScopeFull)),
 		"What the snapshots of task ActorTemplates capture: \"full\" (fidelity MEMORY: memory, root filesystem and /workspace; a woken task carries on where it was) "+
 			"or \"data\" (fidelity VOLUMES: only /workspace; a woken task restarts from its image). Applies to templates created from now on; $AX_SNAPSHOT_SCOPE sets the default")
@@ -142,6 +144,7 @@ func main() {
 	defer cancel()
 
 	go srv.RunIdleSuspender(ctx, idleCheckInterval)
+	go srv.RunDrainWatcher(ctx, drainCheckInterval)
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

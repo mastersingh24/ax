@@ -81,6 +81,18 @@ type TaskReconciler struct {
 	// running without a break, keyed by atespace/name.
 	runningMu    sync.Mutex
 	runningSince map[string]time.Time
+
+	// drainMu guards the worker-drain bookkeeping in drain.go.
+	drainMu sync.Mutex
+	// drainSuspended records, by atespace/name, the draining worker each actor
+	// was suspended off, so a drain episode suspends an actor once.
+	drainSuspended map[string]string
+	// reverted records, by atespace/name, the crash (its crash time) each
+	// actor was last reverted from, so one crash is reverted at most once.
+	reverted map[string]string
+	// revertAttempts counts failed reverts of the current crash, by
+	// atespace/name, so a revert that keeps failing is given up on.
+	revertAttempts map[string]int
 }
 
 // NewTaskReconciler creates a new TaskReconciler. Empty defaults fall back to
@@ -107,6 +119,9 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		statusClient:            &http.Client{Timeout: runnerStatusTimeout},
 		Now:                     time.Now,
 		runningSince:            make(map[string]time.Time),
+		drainSuspended:          make(map[string]string),
+		reverted:                make(map[string]string),
+		revertAttempts:          make(map[string]int),
 	}
 }
 
