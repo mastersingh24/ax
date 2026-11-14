@@ -269,3 +269,31 @@ func TestHandleWorkerLoss_LeavesOtherCrashesAlone(t *testing.T) {
 		t.Errorf("phase = %q, want Failed", got)
 	}
 }
+
+func TestHandleWorkerLoss_MarksTheTaskResumedOnAnotherWorker(t *testing.T) {
+	h := newDrainHarness(t) // t1 sets no spec.idle, so the idle check never visits it
+	h.runOn(t, runnerStatusServer(t, 0))
+	h.sub.SetWorker("w1", ateapipb.WorkerState_WORKER_STATE_DRAINING)
+	h.sub.AssignActor("w1", "default", "t1")
+	h.srv.HandleWorkerLoss(context.Background())
+	if c := drainCondition(h.task(t)); c == nil || c.GetStatus() != "True" {
+		t.Fatalf("AutoSuspended = %v, want True after the drain suspend", c)
+	}
+
+	// The router wakes it on another worker; the old worker still drains.
+	h.sub.SetWorker("w2", ateapipb.WorkerState_WORKER_STATE_ACTIVE)
+	h.sub.AssignActor("w2", "default", "t1")
+	h.runOn(t, runnerStatusServer(t, 0))
+	h.srv.HandleWorkerLoss(context.Background())
+
+	c := drainCondition(h.task(t))
+	if c == nil || c.GetStatus() != "False" || c.GetReason() != controller.ReasonResumedByRequest {
+		t.Fatalf("AutoSuspended = %v, want False/%s once it runs again", c, controller.ReasonResumedByRequest)
+	}
+	if got := h.task(t).GetStatus().GetPhase(); got != "Running" {
+		t.Errorf("phase = %q, want Running", got)
+	}
+	if modes := h.drainSuspends(); len(modes) != 1 {
+		t.Errorf("suspends = %v, want only the one for the drain", modes)
+	}
+}

@@ -151,7 +151,19 @@ func (s *Server) SetWorker(name string, state ateapipb.WorkerState) {
 func (s *Server) AssignActor(worker, atespace, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.assignments[worker] = append(s.assignments[worker], key(atespace, name))
+	k := key(atespace, name)
+	// An actor has at most one assignment (Substrate keys them by actor), so
+	// assigning it moves it off any other worker.
+	for w, keys := range s.assignments {
+		kept := keys[:0]
+		for _, other := range keys {
+			if other != k {
+				kept = append(kept, other)
+			}
+		}
+		s.assignments[w] = kept
+	}
+	s.assignments[worker] = append(s.assignments[worker], k)
 }
 
 // SuspendModes returns the durability mode of every SuspendActor call made

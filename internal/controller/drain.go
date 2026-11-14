@@ -18,11 +18,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/ax/internal/substrate"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Reasons recorded on the AutoSuspended condition when a worker goes away.
@@ -196,6 +199,64 @@ func (r *TaskReconciler) RevertIfWorkerLost(ctx context.Context, task *v1alpha1.
 	}
 	setCondition(task, ConditionAutoSuspended, "True", ReasonRevertedAfterWorkerLoss,
 		fmt.Sprintf("The actor crashed because its worker went away (%q); AX reverted it to its latest snapshot. The next request resumes it.", crash.GetMessage()), r.Now())
+	return task, true, nil
+}
+
+// DrainHandled returns the atespace/name of every task the drain check
+// suspended or reverted that it has not yet seen running again.
+func (r *TaskReconciler) DrainHandled() []string {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, m := range []map[string]string{r.drainSuspended, r.reverted} {
+		for key := range m {
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, key)
+			}
+		}
+	}
+	return out
+}
+
+// ForgetDrain drops what the drain check remembers about a task.
+func (r *TaskReconciler) ForgetDrain(key string) {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	delete(r.drainSuspended, key)
+	delete(r.reverted, key)
+	for k := range r.revertAttempts {
+		if strings.HasPrefix(k, key+"\x00") {
+			delete(r.revertAttempts, k)
+		}
+	}
+}
+
+// NoteResumedAfterDrain turns AutoSuspended False with ReasonResumedByRequest
+// once a task the drain check suspended or reverted is running again, and
+// forgets the task. CheckIdle does the same, but only for tasks that set
+// spec.idle or spec.onCompletion; a drain suspends any task. It returns the
+// task and whether its stored status changed.
+func (r *TaskReconciler) NoteResumedAfterDrain(ctx context.Context, task *v1alpha1.Task) (*v1alpha1.Task, bool, error) {
+	atespace, name := taskKey(task)
+	key := atespace + "/" + name
+	actor, err := r.client.GetActor(ctx, atespace, name)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			r.ForgetDrain(key)
+			return task, false, nil
+		}
+		return task, false, fmt.Errorf("getting actor %s: %w", key, err)
+	}
+	if actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+		return task, false, nil
+	}
+	r.ForgetDrain(key)
+	if !conditionTrue(task, ConditionAutoSuspended) {
+		return task, false, nil
+	}
+	setCondition(task, ConditionAutoSuspended, "False", ReasonResumedByRequest, "Agent Substrate resumed the task to deliver a request", r.Now())
 	return task, true, nil
 }
 

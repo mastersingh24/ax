@@ -58,8 +58,8 @@ func (s *Server) RunDrainWatcher(ctx context.Context, interval time.Duration) {
 
 // HandleWorkerLoss makes one pass over draining workers and crashed actors:
 // it suspends, synchronously, every running task actor on a worker that is
-// draining, and reverts task actors that crashed because their worker went
-// away. Each task is handled under its lock and re-read first, like the idle
+// draining, reverts task actors that crashed because their worker went
+// away, and marks the tasks it handled earlier resumed once they run again. Each task is handled under its lock and re-read first, like the idle
 // check, so a pass never races a concurrent suspend, resume or delete.
 func (s *Server) HandleWorkerLoss(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, drainListTimeout)
@@ -76,6 +76,18 @@ func (s *Server) HandleWorkerLoss(ctx context.Context) {
 		s.withTask(ctx, atespace, name, drainSuspendTimeout, func(cctx context.Context, task *v1alpha1.Task) (*v1alpha1.Task, bool, error) {
 			return s.reconciler.SuspendForDrain(cctx, task, worker)
 		})
+	}
+
+	// A task suspended above reads SUSPENDED here (the suspend was
+	// synchronous), so only one resumed since an earlier pass is marked.
+	for _, key := range s.reconciler.DrainHandled() {
+		atespace, name, ok := strings.Cut(key, "/")
+		if !ok {
+			continue
+		}
+		if !s.withTask(ctx, atespace, name, drainListTimeout, s.reconciler.NoteResumedAfterDrain) {
+			s.reconciler.ForgetDrain(key)
+		}
 	}
 
 	lctx, cancel = context.WithTimeout(ctx, drainListTimeout)
@@ -96,23 +108,25 @@ func (s *Server) HandleWorkerLoss(ctx context.Context) {
 
 // withTask runs fn on the task under its lock, read the way handlers read it,
 // and records the status fn returns when it reports a change. Actors that
-// belong to no task are skipped.
-func (s *Server) withTask(ctx context.Context, atespace, name string, timeout time.Duration, fn func(context.Context, *v1alpha1.Task) (*v1alpha1.Task, bool, error)) {
+// belong to no task are skipped. It returns false only when there is no such
+// task.
+func (s *Server) withTask(ctx context.Context, atespace, name string, timeout time.Duration, fn func(context.Context, *v1alpha1.Task) (*v1alpha1.Task, bool, error)) bool {
 	lockCtx, cancelLock := context.WithTimeout(ctx, idleLockTimeout)
 	unlock, err := s.locker.Lock(lockCtx, "task", atespace, name)
 	cancelLock()
 	if err != nil {
 		// Someone else is working on the task; try again next pass.
-		return
+		return true
 	}
 	defer unlock()
 
 	task, err := s.getTask(ctx, atespace, name)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Warn("drain check: reading task failed", "task", atespace+"/"+name, "error", err)
+		if errors.Is(err, store.ErrNotFound) {
+			return false
 		}
-		return
+		slog.Warn("drain check: reading task failed", "task", atespace+"/"+name, "error", err)
+		return true
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -121,9 +135,10 @@ func (s *Server) withTask(ctx context.Context, atespace, name string, timeout ti
 		slog.Warn("drain check failed", "task", atespace+"/"+name, "error", err)
 	}
 	if !changed {
-		return
+		return true
 	}
 	if err := s.updateTask(cctx, atespace, name, updated.GetStatus()); err != nil {
 		slog.Error("drain check: recording task status failed", "task", atespace+"/"+name, "error", err)
 	}
+	return true
 }
