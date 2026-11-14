@@ -62,7 +62,13 @@ func main() {
 		cfg.Workspace = &ws
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	grace, err := runner.SIGTERMGrace()
+	if err != nil {
+		fatal(err)
+	}
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := runner.ShutdownContext(context.Background(), sigs, grace)
 	defer stop()
 
 	if err := runner.Run(ctx, cfg); err != nil {
