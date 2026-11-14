@@ -17,6 +17,7 @@ package substrate
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,80 @@ type mockControlClient struct {
 	templates           map[string]*ateapipb.ActorTemplate
 	createTemplateErrs  []error
 	createdTemplates    []*ateapipb.ActorTemplate
+	suspendCalls        []*ateapipb.SuspendActorRequest
+	suspendErrs         []error
+	revertCalls         int
+	revertErrs          []error
+	workerPages         [][]*ateapipb.Worker
+	workerPageTokens    []string
+	assignments         map[string][]*ateapipb.ObjectRef
+}
+
+// popErr returns and drops the first queued error, if any.
+func popErr(errs *[]error) error {
+	if len(*errs) == 0 {
+		return nil
+	}
+	err := (*errs)[0]
+	*errs = (*errs)[1:]
+	return err
+}
+
+func (m *mockControlClient) SuspendActor(ctx context.Context, req *ateapipb.SuspendActorRequest, opts ...grpc.CallOption) (*ateapipb.SuspendActorResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.suspendCalls = append(m.suspendCalls, req)
+	if err := popErr(&m.suspendErrs); err != nil {
+		return nil, err
+	}
+	return &ateapipb.SuspendActorResponse{}, nil
+}
+
+func (m *mockControlClient) RevertActor(ctx context.Context, req *ateapipb.RevertActorRequest, opts ...grpc.CallOption) (*ateapipb.RevertActorResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revertCalls++
+	if err := popErr(&m.revertErrs); err != nil {
+		return nil, err
+	}
+	return &ateapipb.RevertActorResponse{Actor: &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: req.GetActor().GetAtespace(), Name: req.GetActor().GetName()},
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
+	}}, nil
+}
+
+// ListWorkers serves workerPages one page at a time, keyed by page token.
+func (m *mockControlClient) ListWorkers(ctx context.Context, req *ateapipb.ListWorkersRequest, opts ...grpc.CallOption) (*ateapipb.ListWorkersResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	page := 0
+	for i, tok := range m.workerPageTokens {
+		if tok == req.GetOptions().GetPageToken() {
+			page = i
+		}
+	}
+	resp := &ateapipb.ListWorkersResponse{}
+	if page < len(m.workerPages) {
+		resp.Workers = m.workerPages[page]
+	}
+	if page+1 < len(m.workerPageTokens) {
+		resp.NextPageToken = m.workerPageTokens[page+1]
+	}
+	return resp, nil
+}
+
+func (m *mockControlClient) ListWorkerActorAssignments(ctx context.Context, req *ateapipb.ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ateapipb.ListWorkerActorAssignmentsResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	refs, ok := m.assignments[req.GetWorker().GetName()]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "worker not found")
+	}
+	resp := &ateapipb.ListWorkerActorAssignmentsResponse{}
+	for _, r := range refs {
+		resp.ActorAssignments = append(resp.ActorAssignments, &ateapipb.ActorAssignment{Actor: r})
+	}
+	return resp, nil
 }
 
 func (m *mockControlClient) GetActorTemplate(ctx context.Context, req *ateapipb.GetActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
@@ -510,5 +585,166 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil, "")
 	if !proto.Equal(tmpl.GetResources(), wantDefault) {
 		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
+	}
+}
+
+func TestClient_SuspendActorSynchronous(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		errs      []error
+		wantCalls int
+		wantErr   bool
+	}{
+		{"ok", nil, 1, false},
+		{"retries Aborted", []error{status.Error(codes.Aborted, "busy")}, 2, false},
+		{"fails on FailedPrecondition", []error{status.Error(codes.FailedPrecondition, "not running")}, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockControlClient{suspendErrs: tc.errs}
+			c := &Client{control: mock}
+			err := c.SuspendActorSynchronous(context.Background(), "ns", "a1")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+			if len(mock.suspendCalls) != tc.wantCalls {
+				t.Fatalf("SuspendActor calls = %d, want %d", len(mock.suspendCalls), tc.wantCalls)
+			}
+			req := mock.suspendCalls[0]
+			if req.GetActor().GetAtespace() != "ns" || req.GetActor().GetName() != "a1" {
+				t.Errorf("actor = %v, want ns/a1", req.GetActor())
+			}
+			if got := req.GetOptions().GetMode(); got != ateapipb.DurabilityMode_DURABILITY_MODE_SYNCHRONOUS {
+				t.Errorf("mode = %v, want DURABILITY_MODE_SYNCHRONOUS", got)
+			}
+		})
+	}
+}
+
+func TestClient_RevertActor(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		errs      []error
+		wantCalls int
+		wantErr   bool
+	}{
+		{"ok", nil, 1, false},
+		{"retries Unavailable", []error{status.Error(codes.Unavailable, "down")}, 2, false},
+		{"fails on FailedPrecondition", []error{status.Error(codes.FailedPrecondition, "no snapshot")}, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockControlClient{revertErrs: tc.errs}
+			c := &Client{control: mock}
+			actor, err := c.RevertActor(context.Background(), "ns", "a1")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
+				t.Errorf("actor state = %v, want SUSPENDED", actor.GetStatus().GetState())
+			}
+			mock.mu.Lock()
+			defer mock.mu.Unlock()
+			if mock.revertCalls != tc.wantCalls {
+				t.Errorf("RevertActor calls = %d, want %d", mock.revertCalls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func worker(name string, state ateapipb.WorkerState) *ateapipb.Worker {
+	return &ateapipb.Worker{
+		Metadata: &ateapipb.ResourceMetadata{Name: name},
+		Status:   &ateapipb.WorkerStatus{State: state},
+	}
+}
+
+func TestClient_ListDrainingWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pages  [][]*ateapipb.Worker
+		tokens []string
+		want   []string
+	}{
+		{"none", nil, nil, nil},
+		{"filters by state", [][]*ateapipb.Worker{{
+			worker("w1", ateapipb.WorkerState_WORKER_STATE_ACTIVE),
+			worker("w2", ateapipb.WorkerState_WORKER_STATE_DRAINING),
+		}}, []string{""}, []string{"w2"}},
+		{"follows pages", [][]*ateapipb.Worker{
+			{worker("w1", ateapipb.WorkerState_WORKER_STATE_DRAINING)},
+			{worker("w2", ateapipb.WorkerState_WORKER_STATE_ACTIVE), worker("w3", ateapipb.WorkerState_WORKER_STATE_DRAINING)},
+		}, []string{"", "p2"}, []string{"w1", "w3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{control: &mockControlClient{workerPages: tc.pages, workerPageTokens: tc.tokens}}
+			got, err := c.ListDrainingWorkers(context.Background())
+			if err != nil {
+				t.Fatalf("ListDrainingWorkers: %v", err)
+			}
+			var names []string
+			for _, w := range got {
+				names = append(names, w.GetMetadata().GetName())
+			}
+			if strings.Join(names, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("draining = %v, want %v", names, tc.want)
+			}
+		})
+	}
+}
+
+func TestClient_ListWorkerActors(t *testing.T) {
+	mock := &mockControlClient{assignments: map[string][]*ateapipb.ObjectRef{
+		"w1": {{Atespace: "ns", Name: "a1"}, {Atespace: "ns", Name: "a2"}},
+	}}
+	c := &Client{control: mock}
+	for _, tc := range []struct {
+		worker  string
+		want    string
+		wantErr bool
+	}{
+		{"w1", "ns/a1,ns/a2", false},
+		{"gone", "", true},
+	} {
+		got, err := c.ListWorkerActors(context.Background(), worker(tc.worker, ateapipb.WorkerState_WORKER_STATE_DRAINING))
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("%s: err = %v, wantErr %v", tc.worker, err, tc.wantErr)
+		}
+		var refs []string
+		for _, r := range got {
+			refs = append(refs, r.GetAtespace()+"/"+r.GetName())
+		}
+		if strings.Join(refs, ",") != tc.want {
+			t.Errorf("%s: actors = %v, want %s", tc.worker, refs, tc.want)
+		}
+	}
+}
+
+func TestIsWorkerLossCrash(t *testing.T) {
+	crashed := func(msg string) *ateapipb.Actor {
+		return &ateapipb.Actor{Status: &ateapipb.ActorStatus{
+			State: ateapipb.ActorState_ACTOR_STATE_CRASHED,
+			Crash: &ateapipb.ActorCrash{Message: msg},
+		}}
+	}
+	for _, tc := range []struct {
+		name  string
+		actor *ateapipb.Actor
+		want  bool
+	}{
+		{"pod went away", crashed("worker pod went away while hosting the actor"), true},
+		{"worker restarted", crashed("worker restarted while hosting the actor"), true},
+		{"worker draining", crashed("assigned worker is draining"), true},
+		{"boot failure", crashed("atelet RunWorkload: wakeup probe never returned 200"), false},
+		{"no crash info", &ateapipb.Actor{Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED}}, false},
+		{"running", &ateapipb.Actor{Status: &ateapipb.ActorStatus{
+			State: ateapipb.ActorState_ACTOR_STATE_RUNNING,
+			Crash: &ateapipb.ActorCrash{Message: "worker pod went away while hosting the actor"},
+		}}, false},
+		{"nil", nil, false},
+	} {
+		if got := IsWorkerLossCrash(tc.actor); got != tc.want {
+			t.Errorf("%s: IsWorkerLossCrash = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
