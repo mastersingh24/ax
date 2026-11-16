@@ -32,6 +32,14 @@ ax-server needs to read Workers, which takes the global owner role in Substrate'
 
 The task then reads `Suspended`, not `Failed`, and its next request resumes it. Substrate reports why an actor crashed only as text, so AX matches the messages Substrate v1.0 uses for a lost worker (`worker pod went away while hosting the actor`, `worker restarted while hosting the actor`, `assigned worker is draining`). A crash with any other cause is left alone, so a task that fails as it starts doesn't loop. One crash is reverted once, and a revert that keeps failing is given up after three tries, leaving the task `Failed`.
 
+**Revert after a failed drain suspend.** The drain suspend itself can fail: when the agent can't be checkpointed, for example because an older runner stopped it on the worker's `SIGTERM`, `runsc checkpoint` exits with status 128. The actor keeps running on the draining worker and crashes when the worker goes, with a crash message about the checkpoint rather than the lost worker, so the revert above doesn't apply. ax-server therefore remembers every drain suspend it makes that fails, retries the suspend on later passes while the actor is still running there, and once the actor reads `CRASHED`, reverts it to its latest snapshot and records:
+
+| Status | Reason |
+|---|---|
+| `True` | `RevertedAfterFailedSuspend` |
+
+The message names the draining worker and quotes the suspend error. This revert is keyed on ax-server's own record of the suspends it attempted, not on Substrate's message, so a crash AX didn't cause through a drain is never reverted. The record is dropped when the actor reads `SUSPENDED` or runs on another worker, after 45 minutes (past Substrate's 30-minute window), or after three failed reverts. Like the other revert, it restores the latest snapshot, so work since then is lost. The record is kept in memory: if ax-server restarts mid-drain, it is lost, and such a task stays `Failed`.
+
 ## When it isn't enough
 
 A suspend snapshots the task as it is. Work the agent hadn't persisted is kept only if the snapshot is a memory snapshot (`--snapshot-scope full`). With volume snapshots, the task resumes with its files but restarts its process. If the node disappears without a drain (a hardware failure), there is no `SIGTERM` and no window: the revert brings the task back to its last snapshot, whenever that was taken.
