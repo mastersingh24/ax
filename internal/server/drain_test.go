@@ -40,6 +40,7 @@ import (
 type drainHarness struct {
 	sub *substratetest.Server
 	srv *server.Server
+	rec *controller.TaskReconciler
 	// baseline is how many suspends CreateTask made, so the tests count
 	// only the suspends the drain check makes.
 	baseline int
@@ -48,14 +49,15 @@ type drainHarness struct {
 func newDrainHarness(t *testing.T) *drainHarness {
 	t.Helper()
 	sub := substratetest.NewServer(t)
-	srv := server.NewServer(memory.NewStore(), newTestReconciler(sub))
+	rec := newTestReconciler(sub)
+	srv := server.NewServer(memory.NewStore(), rec)
 	if _, err := srv.CreateTask(context.Background(), &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "t1"},
 		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
 	}}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	return &drainHarness{sub: sub, srv: srv, baseline: len(sub.SuspendModes("default", "t1"))}
+	return &drainHarness{sub: sub, srv: srv, rec: rec, baseline: len(sub.SuspendModes("default", "t1"))}
 }
 
 // drainSuspends returns the durability modes of t1's suspends since setup.
@@ -77,6 +79,38 @@ func (h *drainHarness) runOn(t *testing.T, workerAddr string) {
 	}
 	h.sub.SetActor(a)
 }
+
+// runOnWorker puts t1's actor in RUNNING on the named worker.
+func (h *drainHarness) runOnWorker(t *testing.T, worker string) {
+	t.Helper()
+	a, ok := h.sub.Actor("default", "t1")
+	if !ok {
+		t.Fatal("t1 has no actor")
+	}
+	a.Status = &ateapipb.ActorStatus{
+		State:            ateapipb.ActorState_ACTOR_STATE_RUNNING,
+		WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker}, WorkerPod: worker + "-pod"},
+	}
+	h.sub.SetActor(a)
+}
+
+// failDrainSuspend drains w1 under t1, running on w1, with every suspend
+// failing the way runsc does when the agent process is already gone.
+func (h *drainHarness) failDrainSuspend(t *testing.T) {
+	t.Helper()
+	h.runOnWorker(t, "w1")
+	h.sub.SetWorker("w1", ateapipb.WorkerState_WORKER_STATE_DRAINING)
+	h.sub.AssignActor("w1", "default", "t1")
+	h.sub.SetErrors(substratetest.Errors{SuspendActor: status.Error(codes.Internal, checkpointFailure)})
+	h.srv.HandleWorkerLoss(context.Background())
+	if n := len(h.drainSuspends()); n != 0 {
+		t.Fatalf("recorded %d successful suspends, want none", n)
+	}
+}
+
+// checkpointFailure is the suspend error seen when an older runner had
+// already stopped the agent on the worker's SIGTERM.
+const checkpointFailure = "suspend failed: atelet Checkpoint: while calling worker CheckpointWorkload: while running `runsc checkpoint`: exit status 128"
 
 func (h *drainHarness) crash(t *testing.T, message string) {
 	t.Helper()
@@ -295,5 +329,109 @@ func TestHandleWorkerLoss_MarksTheTaskResumedOnAnotherWorker(t *testing.T) {
 	}
 	if modes := h.drainSuspends(); len(modes) != 1 {
 		t.Errorf("suspends = %v, want only the one for the drain", modes)
+	}
+}
+
+func TestHandleWorkerLoss_RevertsAfterAFailedDrainSuspendOnce(t *testing.T) {
+	h := newDrainHarness(t)
+	h.failDrainSuspend(t)
+	h.crash(t, checkpointFailure)
+	h.sub.SetErrors(substratetest.Errors{})
+
+	h.srv.HandleWorkerLoss(context.Background())
+	h.srv.HandleWorkerLoss(context.Background())
+
+	if n := h.sub.RevertCalls("default", "t1"); n != 1 {
+		t.Fatalf("RevertActor calls = %d, want 1", n)
+	}
+	task := h.task(t)
+	if got := task.GetStatus().GetPhase(); got != "Suspended" {
+		t.Errorf("phase after revert = %q, want Suspended", got)
+	}
+	c := drainCondition(task)
+	if c == nil || c.GetStatus() != "True" || c.GetReason() != controller.ReasonRevertedAfterFailedSuspend {
+		t.Fatalf("AutoSuspended = %v, want True/%s", c, controller.ReasonRevertedAfterFailedSuspend)
+	}
+	if !strings.Contains(c.GetMessage(), "exit status 128") || !strings.Contains(c.GetMessage(), "w1") {
+		t.Errorf("message %q should name the worker and quote the suspend error", c.GetMessage())
+	}
+}
+
+func TestHandleWorkerLoss_LeavesACrashAXNeverTriedToSuspendAlone(t *testing.T) {
+	h := newDrainHarness(t)
+	h.crash(t, checkpointFailure) // same text, but no drain suspend by AX
+	for range 3 {
+		h.srv.HandleWorkerLoss(context.Background())
+	}
+	if n := h.sub.RevertCalls("default", "t1"); n != 0 {
+		t.Fatalf("RevertActor calls = %d, want 0", n)
+	}
+	if got := h.task(t).GetStatus().GetPhase(); got != "Failed" {
+		t.Errorf("phase = %q, want Failed", got)
+	}
+}
+
+func TestHandleWorkerLoss_ForgetsAFailedSuspendOnceRunningElsewhere(t *testing.T) {
+	h := newDrainHarness(t)
+	h.failDrainSuspend(t)
+	h.sub.SetErrors(substratetest.Errors{})
+
+	// The actor turns up running on another worker: nothing to revert.
+	h.sub.SetWorker("w2", ateapipb.WorkerState_WORKER_STATE_ACTIVE)
+	h.sub.AssignActor("w2", "default", "t1")
+	h.runOnWorker(t, "w2")
+	h.srv.HandleWorkerLoss(context.Background())
+
+	// A later crash with no drain suspend behind it is not reverted.
+	h.crash(t, checkpointFailure)
+	h.srv.HandleWorkerLoss(context.Background())
+	if n := h.sub.RevertCalls("default", "t1"); n != 0 {
+		t.Fatalf("RevertActor calls = %d, want 0 once the record was cleared", n)
+	}
+}
+
+func TestHandleWorkerLoss_RevertsWhenTheCrashComesOnALaterPass(t *testing.T) {
+	h := newDrainHarness(t)
+	h.failDrainSuspend(t)
+	// The worker hangs on for a while; each pass retries the suspend, which
+	// keeps failing, and the actor stays RUNNING on the draining worker.
+	for range 3 {
+		h.srv.HandleWorkerLoss(context.Background())
+	}
+	if n := h.sub.RevertCalls("default", "t1"); n != 0 {
+		t.Fatalf("RevertActor calls = %d before the crash, want 0", n)
+	}
+	h.crash(t, checkpointFailure)
+	h.sub.SetErrors(substratetest.Errors{})
+	h.srv.HandleWorkerLoss(context.Background())
+	if n := h.sub.RevertCalls("default", "t1"); n != 1 {
+		t.Fatalf("RevertActor calls = %d after the crash, want 1", n)
+	}
+}
+
+func TestHandleWorkerLoss_FailedSuspendRecordExpires(t *testing.T) {
+	h := newDrainHarness(t)
+	h.failDrainSuspend(t)
+	h.sub.SetErrors(substratetest.Errors{})
+	later := time.Now().Add(46 * time.Minute)
+	h.rec.Now = func() time.Time { return later }
+
+	h.crash(t, checkpointFailure)
+	h.srv.HandleWorkerLoss(context.Background())
+	if n := h.sub.RevertCalls("default", "t1"); n != 0 {
+		t.Fatalf("RevertActor calls = %d past the watch window, want 0", n)
+	}
+}
+
+func TestHandleWorkerLoss_GivesUpRevertingAFailedSuspend(t *testing.T) {
+	h := newDrainHarness(t)
+	h.failDrainSuspend(t)
+	h.crash(t, checkpointFailure)
+	h.sub.SetErrors(substratetest.Errors{RevertActor: status.Error(codes.FailedPrecondition, "no snapshot")})
+	for range 6 {
+		h.srv.HandleWorkerLoss(context.Background())
+	}
+	if n := h.sub.RevertCalls("default", "t1"); n != 3 {
+		t.Fatalf("RevertActor calls = %d, want 3 (then give up)", n)
 	}
 }

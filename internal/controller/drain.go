@@ -36,6 +36,10 @@ const (
 	// ReasonRevertedAfterWorkerLoss: the actor crashed because its worker
 	// went away, and AX reverted it to its latest snapshot.
 	ReasonRevertedAfterWorkerLoss = "RevertedAfterWorkerLoss"
+	// ReasonRevertedAfterFailedSuspend: AX tried to suspend the actor off a
+	// draining worker, the suspend failed, the actor ended CRASHED, and AX
+	// reverted it to its latest snapshot.
+	ReasonRevertedAfterFailedSuspend = "RevertedAfterFailedSuspend"
 
 	// maxRevertAttempts bounds how often one crash is retried before AX
 	// leaves the task Failed.
@@ -43,7 +47,28 @@ const (
 	// drainStatusTimeout bounds the best-effort read of the runner's status
 	// that only feeds the condition message.
 	drainStatusTimeout = 2 * time.Second
+	// failedSuspendTTL is how long the drain check keeps watching an actor
+	// whose drain suspend failed. Agent Substrate v1.0 crashes an actor that
+	// is not suspended within 30 minutes of its worker starting to drain, so
+	// this outlasts that window.
+	failedSuspendTTL = 45 * time.Minute
+	// maxErrorSummary bounds the suspend error quoted in the condition
+	// message.
+	maxErrorSummary = 300
 )
+
+// failedDrainSuspend is what the drain check remembers about a drain suspend
+// that failed.
+type failedDrainSuspend struct {
+	// worker is the draining worker the actor was on.
+	worker string
+	// err is the latest suspend error.
+	err string
+	// since is when the first suspend of this episode failed.
+	since time.Time
+	// revertAttempts counts failed reverts.
+	revertAttempts int
+}
 
 // DrainingActors returns the actors hosted on draining workers, keyed by
 // atespace/name, with the name of the worker each is on.
@@ -115,11 +140,23 @@ func (r *TaskReconciler) SuspendForDrain(ctx context.Context, task *v1alpha1.Tas
 
 	slog.Info("worker is draining; suspending task", "task", key, "worker", worker)
 	if err := r.client.SuspendActorSynchronous(ctx, atespace, name); err != nil {
+		// Remember the failure: if the actor ends up CRASHED, which
+		// happens when the worker goes away, RevertIfDrainSuspendFailed
+		// reverts it to its latest snapshot.
+		r.drainMu.Lock()
+		f := r.suspendFailed[key]
+		if f == nil || f.worker != worker {
+			f = &failedDrainSuspend{worker: worker, since: r.Now()}
+			r.suspendFailed[key] = f
+		}
+		f.err = err.Error()
+		r.drainMu.Unlock()
 		return task, false, fmt.Errorf("suspending actor %s off draining worker %s: %w", key, worker, err)
 	}
 	r.forgetRunning(key)
 	r.drainMu.Lock()
 	r.drainSuspended[key] = worker
+	delete(r.suspendFailed, key)
 	r.drainMu.Unlock()
 
 	if task.Status == nil {
@@ -202,6 +239,132 @@ func (r *TaskReconciler) RevertIfWorkerLost(ctx context.Context, task *v1alpha1.
 	return task, true, nil
 }
 
+// DrainSuspendFailed returns the atespace/name of every actor whose drain
+// suspend failed and that the drain check is still watching.
+func (r *TaskReconciler) DrainSuspendFailed() []string {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	out := make([]string, 0, len(r.suspendFailed))
+	for key := range r.suspendFailed {
+		out = append(out, key)
+	}
+	return out
+}
+
+// RevertIfDrainSuspendFailed reverts the task's actor to its latest snapshot
+// when AX tried to suspend it off a draining worker, the suspend failed, and
+// the actor then ended CRASHED. That happens when the agent cannot be
+// checkpointed, for example because an older runner stopped the agent on
+// the worker's SIGTERM, and the worker then goes away.
+//
+// It acts only on actors in AX's own record of failed drain suspends, never
+// on Substrate's crash message, so a task that fails as it starts is never
+// reverted. It keeps watching the actor across passes, since it crashes
+// only when its worker goes, and forgets it once it is suspended or running
+// on another worker, or after failedSuspendTTL. A revert that keeps failing
+// is given up after maxRevertAttempts.
+//
+// It returns the task and whether its stored status changed.
+func (r *TaskReconciler) RevertIfDrainSuspendFailed(ctx context.Context, task *v1alpha1.Task) (*v1alpha1.Task, bool, error) {
+	atespace, name := taskKey(task)
+	key := atespace + "/" + name
+
+	r.drainMu.Lock()
+	f := r.suspendFailed[key]
+	var rec failedDrainSuspend
+	if f != nil {
+		rec = *f
+	}
+	r.drainMu.Unlock()
+	if f == nil {
+		return task, false, nil
+	}
+	if r.Now().Sub(rec.since) > failedSuspendTTL {
+		slog.Warn("drain check: stopped watching an actor whose drain suspend failed", "task", key, "worker", rec.worker, "since", rec.since)
+		r.forgetFailedSuspend(key)
+		return task, false, nil
+	}
+	if task.GetMetadata() == nil || task.GetStatus().GetPhase() == v1alpha1.PhaseTerminating || task.GetStatus().GetPhase() == v1alpha1.PhasePending {
+		return task, false, nil
+	}
+
+	actor, err := r.client.GetActor(ctx, atespace, name)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			r.forgetFailedSuspend(key)
+			return task, false, nil
+		}
+		return task, false, fmt.Errorf("getting actor %s: %w", key, err)
+	}
+	switch actor.GetStatus().GetState() {
+	case ateapipb.ActorState_ACTOR_STATE_CRASHED:
+		// Revert below.
+	case ateapipb.ActorState_ACTOR_STATE_SUSPENDED:
+		// A later suspend went through, or something else suspended it.
+		r.forgetFailedSuspend(key)
+		return task, false, nil
+	case ateapipb.ActorState_ACTOR_STATE_RUNNING:
+		if w := actor.GetStatus().GetWorkerAssignment().GetWorker().GetName(); w != "" && w != rec.worker {
+			// Suspended after all and resumed on another worker.
+			r.forgetFailedSuspend(key)
+		}
+		// Still on the draining worker: the next pass retries the suspend.
+		return task, false, nil
+	default:
+		// Moving between states; look again on the next pass.
+		return task, false, nil
+	}
+
+	crash := actor.GetStatus().GetCrash()
+	crashID := crash.GetCrashTime().AsTime().UTC().Format(time.RFC3339Nano) + " " + crash.GetMessage()
+	slog.Info("actor crashed after its drain suspend failed; reverting it to its latest snapshot", "task", key, "worker", rec.worker, "suspend_error", rec.err)
+	if _, err := r.client.RevertActor(ctx, atespace, name); err != nil {
+		r.drainMu.Lock()
+		if f := r.suspendFailed[key]; f != nil {
+			f.revertAttempts++
+			if f.revertAttempts >= maxRevertAttempts {
+				delete(r.suspendFailed, key)
+				slog.Warn("drain check: giving up reverting an actor whose drain suspend failed", "task", key, "error", err)
+			}
+		}
+		r.drainMu.Unlock()
+		return task, false, fmt.Errorf("reverting actor %s: %w", key, err)
+	}
+	r.drainMu.Lock()
+	delete(r.suspendFailed, key)
+	delete(r.drainSuspended, key)
+	r.reverted[key] = crashID
+	r.drainMu.Unlock()
+	r.forgetRunning(key)
+
+	if task.Status == nil {
+		task.Status = &v1alpha1.TaskStatus{}
+	}
+	if task.Status.Phase == v1alpha1.PhaseFailed {
+		// The actor is suspended again, so let the phase follow it.
+		task.Status.Phase = ""
+	}
+	setCondition(task, ConditionAutoSuspended, "True", ReasonRevertedAfterFailedSuspend,
+		fmt.Sprintf("AX could not suspend the actor off draining worker %s (%s), and the actor then crashed; AX reverted it to its latest snapshot. The next request resumes it.", rec.worker, summarize(rec.err)), r.Now())
+	return task, true, nil
+}
+
+// forgetFailedSuspend drops the record of a failed drain suspend.
+func (r *TaskReconciler) forgetFailedSuspend(key string) {
+	r.drainMu.Lock()
+	delete(r.suspendFailed, key)
+	r.drainMu.Unlock()
+}
+
+// summarize shortens an error for a condition message.
+func summarize(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > maxErrorSummary {
+		msg = msg[:maxErrorSummary] + "…"
+	}
+	return msg
+}
+
 // DrainHandled returns the atespace/name of every task the drain check
 // suspended or reverted that it has not yet seen running again.
 func (r *TaskReconciler) DrainHandled() []string {
@@ -226,6 +389,7 @@ func (r *TaskReconciler) ForgetDrain(key string) {
 	defer r.drainMu.Unlock()
 	delete(r.drainSuspended, key)
 	delete(r.reverted, key)
+	delete(r.suspendFailed, key)
 	for k := range r.revertAttempts {
 		if strings.HasPrefix(k, key+"\x00") {
 			delete(r.revertAttempts, k)

@@ -93,6 +93,10 @@ type TaskReconciler struct {
 	// revertAttempts counts failed reverts of the current crash, by
 	// atespace/name, so a revert that keeps failing is given up on.
 	revertAttempts map[string]int
+	// suspendFailed records, by atespace/name, the actors AX tried and
+	// failed to suspend off a draining worker, so the drain check can revert
+	// them if they end up CRASHED.
+	suspendFailed map[string]*failedDrainSuspend
 }
 
 // NewTaskReconciler creates a new TaskReconciler. Empty defaults fall back to
@@ -122,6 +126,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		drainSuspended:          make(map[string]string),
 		reverted:                make(map[string]string),
 		revertAttempts:          make(map[string]int),
+		suspendFailed:           make(map[string]*failedDrainSuspend),
 	}
 }
 

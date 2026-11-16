@@ -58,8 +58,9 @@ func (s *Server) RunDrainWatcher(ctx context.Context, interval time.Duration) {
 
 // HandleWorkerLoss makes one pass over draining workers and crashed actors:
 // it suspends, synchronously, every running task actor on a worker that is
-// draining, reverts task actors that crashed because their worker went
-// away, and marks the tasks it handled earlier resumed once they run again. Each task is handled under its lock and re-read first, like the idle
+// draining, reverts task actors that crashed because their worker went away
+// or after a drain suspend AX made failed, and marks the tasks it handled
+// earlier resumed once they run again. Each task is handled under its lock and re-read first, like the idle
 // check, so a pass never races a concurrent suspend, resume or delete.
 func (s *Server) HandleWorkerLoss(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, drainListTimeout)
@@ -86,6 +87,20 @@ func (s *Server) HandleWorkerLoss(ctx context.Context) {
 			continue
 		}
 		if !s.withTask(ctx, atespace, name, drainListTimeout, s.reconciler.NoteResumedAfterDrain) {
+			s.reconciler.ForgetDrain(key)
+		}
+	}
+
+	// An actor AX failed to suspend off a draining worker crashes when the
+	// worker goes away; revert it then. Its crash message says why the
+	// checkpoint failed rather than that the worker went away, so the
+	// worker-loss pass below would not touch it.
+	for _, key := range s.reconciler.DrainSuspendFailed() {
+		atespace, name, ok := strings.Cut(key, "/")
+		if !ok {
+			continue
+		}
+		if !s.withTask(ctx, atespace, name, revertTimeout, s.reconciler.RevertIfDrainSuspendFailed) {
 			s.reconciler.ForgetDrain(key)
 		}
 	}
