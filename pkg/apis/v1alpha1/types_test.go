@@ -728,3 +728,38 @@ func TestValidateTask_HTTPPort(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateTask_EgressHosts(t *testing.T) {
+	task := func(host string) *v1alpha1.Task {
+		return &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "t", Atespace: "default"},
+			Spec: &v1alpha1.TaskSpec{
+				Egress: []*v1alpha1.EgressRule{{Hosts: []string{host}}},
+			},
+		}
+	}
+	for _, good := range []string{
+		"aiplatform.googleapis.com",
+		"*.googleapis.com",
+		"http://switchboard.switchboard.svc.cluster.local",
+		"https://api.github.com",
+	} {
+		if err := v1alpha1.ValidateTask(task(good)); err != nil {
+			t.Errorf("host %q should be valid: %v", good, err)
+		}
+	}
+	for _, bad := range []string{
+		"",
+		"http://",
+		"https://",
+		"ftp://example.com",
+		"http://switchboard.switchboard.svc.cluster.local:8080",
+		"http://switchboard.switchboard.svc.cluster.local/v1/messages",
+		"example.com:443",
+		"example.com/path",
+	} {
+		if err := v1alpha1.ValidateTask(task(bad)); err == nil {
+			t.Errorf("host %q should be rejected", bad)
+		}
+	}
+}

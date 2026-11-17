@@ -408,6 +408,9 @@ func ValidateTask(t *Task) error {
 	if err := ValidateTaskConfig(spec); err != nil {
 		return err
 	}
+	if err := validateTaskEgress(spec); err != nil {
+		return err
+	}
 	if err := validateTaskHTTP(spec); err != nil {
 		return err
 	}
@@ -452,6 +455,31 @@ func ValidateTaskSize(t *Task) error {
 	}
 	if len(data) > MaxTaskYAMLSize {
 		return fmt.Errorf("task: encoded launch configuration is %d bytes, which exceeds the limit of %d bytes", len(data), MaxTaskYAMLSize)
+	}
+	return nil
+}
+
+// validateTaskEgress checks optional scheme prefixes on spec.egress[].hosts:
+// bare hosts (and "https://<host>") become HTTPS rules, while "http://<host>"
+// becomes a plain-HTTP rule; ports and paths belong on spec.egress[].ports and
+// the request URL, never in the host pattern.
+func validateTaskEgress(spec *TaskSpec) error {
+	for i, rule := range spec.GetEgress() {
+		for j, h := range rule.GetHosts() {
+			field := fmt.Sprintf("spec.egress[%d].hosts[%d]", i, j)
+			rest := h
+			if strings.Contains(h, "://") {
+				var ok bool
+				if rest, ok = strings.CutPrefix(h, "http://"); !ok {
+					if rest, ok = strings.CutPrefix(h, "https://"); !ok {
+						return fmt.Errorf("%s: unsupported scheme in %q (want bare hostname, http://<host>, or https://<host>)", field, h)
+					}
+				}
+			}
+			if rest == "" || strings.ContainsAny(rest, "/:") {
+				return fmt.Errorf("%s: invalid host %q (must not be empty or carry a port or path)", field, h)
+			}
+		}
 	}
 	return nil
 }

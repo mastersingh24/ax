@@ -748,3 +748,78 @@ func TestIsWorkerLossCrash(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEgressPolicy(t *testing.T) {
+	creds := []*v1alpha1.CredentialInjection{{
+		Header:        "Authorization",
+		Prefix:        "Bearer ",
+		CredentialUri: "ate-secret://k8s.io/default/ate-credentials/tok/token",
+	}}
+	wantEffects := &ateapipb.HttpRuleEffects{
+		ReplaceHeaders: []*ateapipb.CredentialHeader{{
+			Header:        "Authorization",
+			Prefix:        "Bearer ",
+			CredentialUri: "ate-secret://k8s.io/default/ate-credentials/tok/token",
+		}},
+	}
+
+	got := BuildEgressPolicy("cred-test", []*v1alpha1.EgressRule{
+		{
+			Hosts:       []string{"aiplatform.googleapis.com", "https://api.github.com"},
+			Credentials: creds,
+		},
+		{
+			Hosts:       []string{"http://switchboard.switchboard.svc.cluster.local"},
+			Ports:       []int32{8080},
+			Credentials: creds,
+		},
+		{
+			Hosts: []string{"http://plain-default-port.svc.cluster.local"},
+		},
+		{
+			Hosts: []string{"tls.example.com", "http://plain.example.com"},
+			Ports: []int32{8443},
+		},
+	})
+
+	want := &ateapipb.EgressPolicy{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: "cred-test", Name: "default"},
+		Rules: []*ateapipb.EgressRule{
+			{
+				Https: &ateapipb.HttpsRule{
+					Hostnames: []string{"aiplatform.googleapis.com", "api.github.com"},
+					Ports:     &ateapipb.Ports{Numbers: []int32{443}},
+					Effects:   wantEffects,
+				},
+			},
+			{
+				Http: &ateapipb.HttpRule{
+					Hostnames: []string{"switchboard.switchboard.svc.cluster.local"},
+					Ports:     &ateapipb.Ports{Numbers: []int32{8080}},
+					Effects:   wantEffects,
+				},
+			},
+			{
+				Http: &ateapipb.HttpRule{
+					Hostnames: []string{"plain-default-port.svc.cluster.local"},
+					Ports:     &ateapipb.Ports{Numbers: []int32{80}},
+				},
+			},
+			{
+				Https: &ateapipb.HttpsRule{
+					Hostnames: []string{"tls.example.com"},
+					Ports:     &ateapipb.Ports{Numbers: []int32{8443}},
+				},
+			},
+			{
+				Http: &ateapipb.HttpRule{
+					Hostnames: []string{"plain.example.com"},
+					Ports:     &ateapipb.Ports{Numbers: []int32{8443}},
+				},
+			},
+		},
+	}
+	if !proto.Equal(got, want) {
+		t.Fatalf("BuildEgressPolicy() =\n%v\nwant:\n%v", got, want)
+	}
+}

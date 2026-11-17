@@ -36,8 +36,8 @@ All Control API traffic goes through this package. It encapsulates:
   from `SUBSTRATE_CA_FILE`.
 - **Retry** — `IsTransientError` + `retryOnCodes` for `Unavailable`-class errors.
 - **Helpers** the reconciler relies on — `EnsureAtespace`, `EnsureActorTemplateWithImage`,
-  `EnsureActor`, `SuspendActor`, `ResumeActor`, `DeleteActor`, `WorkerIP`,
-  `ResourceLimits`, `BuildActorTemplate`; for worker drain (fork),
+  `EnsureActor`, `EnsureEgressPolicy`, `BuildEgressPolicy`, `SuspendActor`, `ResumeActor`,
+  `DeleteActor`, `WorkerIP`, `ResourceLimits`, `BuildActorTemplate`; for worker drain (fork),
   `SuspendActorSynchronous`, `RevertActor`, `ListDrainingWorkers`,
   `ListWorkerActors`, `IsWorkerLossCrash`.
 

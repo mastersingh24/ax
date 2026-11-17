@@ -564,34 +564,66 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 }
 
 // BuildEgressPolicy converts a task's egress rules into a Substrate egress
-// policy. Every rule becomes an https rule, which the gateway intercepts,
-// because credentials can only be injected into traffic it terminates.
-// Agent Substrate v0.4 also enforces tls_passthrough rules (v0.3 ignored
-// them); AX does not generate any yet.
+// policy. Bare hosts (and "https://<host>") become an https rule, which the
+// gateway terminates and intercepts; "http://<host>" entries become a plain
+// http rule, for destinations such as in-cluster Services whose certificates
+// the public-CA egress gateway cannot verify. Credentials are injected on
+// both. Agent Substrate v0.4+ also enforces tls_passthrough rules; AX does not
+// generate any yet.
 func BuildEgressPolicy(atespace string, rules []*v1alpha1.EgressRule) *ateapipb.EgressPolicy {
 	policy := &ateapipb.EgressPolicy{
 		Metadata: &ateapipb.ResourceMetadata{Atespace: atespace, Name: "default"},
 	}
+	buildEffects := func(creds []*v1alpha1.CredentialInjection) *ateapipb.HttpRuleEffects {
+		if len(creds) == 0 {
+			return nil
+		}
+		effects := &ateapipb.HttpRuleEffects{}
+		for _, cred := range creds {
+			effects.ReplaceHeaders = append(effects.ReplaceHeaders, &ateapipb.CredentialHeader{
+				Header:        cred.GetHeader(),
+				Prefix:        cred.GetPrefix(),
+				CredentialUri: cred.GetCredentialUri(),
+			})
+		}
+		return effects
+	}
 	for _, rule := range rules {
-		ports := rule.GetPorts()
-		if len(ports) == 0 {
-			ports = []int32{443}
-		}
-		https := &ateapipb.HttpsRule{
-			Hostnames: rule.GetHosts(),
-			Ports:     &ateapipb.Ports{Numbers: ports},
-		}
-		if creds := rule.GetCredentials(); len(creds) > 0 {
-			https.Effects = &ateapipb.HttpRuleEffects{}
-			for _, cred := range creds {
-				https.Effects.ReplaceHeaders = append(https.Effects.ReplaceHeaders, &ateapipb.CredentialHeader{
-					Header:        cred.GetHeader(),
-					Prefix:        cred.GetPrefix(),
-					CredentialUri: cred.GetCredentialUri(),
-				})
+		var httpsHosts, httpHosts []string
+		for _, h := range rule.GetHosts() {
+			if rest, ok := strings.CutPrefix(h, "http://"); ok {
+				httpHosts = append(httpHosts, rest)
+			} else {
+				rest, _ := strings.CutPrefix(h, "https://")
+				httpsHosts = append(httpsHosts, rest)
 			}
 		}
-		policy.Rules = append(policy.Rules, &ateapipb.EgressRule{Https: https})
+		if len(httpsHosts) > 0 || len(httpHosts) == 0 {
+			ports := rule.GetPorts()
+			if len(ports) == 0 {
+				ports = []int32{443}
+			}
+			policy.Rules = append(policy.Rules, &ateapipb.EgressRule{
+				Https: &ateapipb.HttpsRule{
+					Hostnames: httpsHosts,
+					Ports:     &ateapipb.Ports{Numbers: ports},
+					Effects:   buildEffects(rule.GetCredentials()),
+				},
+			})
+		}
+		if len(httpHosts) > 0 {
+			ports := rule.GetPorts()
+			if len(ports) == 0 {
+				ports = []int32{80}
+			}
+			policy.Rules = append(policy.Rules, &ateapipb.EgressRule{
+				Http: &ateapipb.HttpRule{
+					Hostnames: httpHosts,
+					Ports:     &ateapipb.Ports{Numbers: ports},
+					Effects:   buildEffects(rule.GetCredentials()),
+				},
+			})
+		}
 	}
 	return policy
 }

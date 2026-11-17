@@ -52,7 +52,7 @@ v1.0.0. Hashes change on every rebase; match patches by subject.
 
 | Patch | Commits | Upstream | Drop when |
 |---|---|---|---|
-| Tasks declare egress and injected credentials (`spec.egress`) | ba8043d | google/ax#449; the `Gateway`/`TrafficPolicy` proposal google/ax#549 would cover it | ax creates the Substrate egress policy itself |
+| Tasks declare egress and injected credentials (`spec.egress`, including `http://<host>` for plain-HTTP rules) | ba8043d | google/ax#449; the `Gateway`/`TrafficPolicy` proposal google/ax#549 would cover it | ax creates the Substrate egress policy itself |
 | Substrate work and its status writes run on a context detached from the caller | 8df0718 | google/ax#452 | #452 is fixed |
 | A task serves its own API through the runner (`spec.http.port`); readiness waits for it; forwarded requests carry the loopback Host, with the router's name in X-Forwarded-Host | cbc5b15, 63c1f74, b54ffea | google/ax#501, closed as a duplicate of #549 (ingress rules per task). The router's CONNECT path already reaches any actor port; the readiness wait is the part still missing | upstream can route to, or wait for, a task's own port |
 | Suspend idle and finished tasks (`spec.idle`, `spec.onCompletion`): runner activity and exit status, the controller's `CheckIdle`, the periodic pass in ax-server, the `AutoSuspended` condition, the router-fallback deadline, mTLS status reads through the router, separate validation, and the server test | d55028d, 71deda2, 74ef46e, d2bce8e, 3536b9b, 2f7c16e, 0b9d757, 7b75b0a, 96daf35, 3185f6a | google/ax#420 | upstream ships automatic suspension |

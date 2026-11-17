@@ -434,13 +434,17 @@ func (x *TaskHTTP) GetPort() int32 {
 	return 0
 }
 
-// EgressRule allows HTTPS to a set of hosts and ports, and optionally has the
-// egress gateway inject credentials into matching requests.
+// EgressRule allows HTTPS (or plain HTTP for "http://<host>" entries) to a
+// set of hosts and ports, and optionally has the egress gateway inject
+// credentials into matching requests.
 type EgressRule struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// hosts are DNS names, or a DNS name with "*" as its leftmost label.
+	// hosts are DNS names (or a DNS name with "*" as its leftmost label),
+	// optionally prefixed with "http://" for plain-HTTP destinations such as
+	// in-cluster Services whose certificates the public-CA egress gateway
+	// cannot verify.
 	Hosts []string `protobuf:"bytes,1,rep,name=hosts,proto3" json:"hosts,omitempty"`
-	// ports defaults to 443 when empty.
+	// ports defaults to 443 for HTTPS hosts and 80 for "http://" hosts when empty.
 	Ports []int32 `protobuf:"varint,2,rep,packed,name=ports,proto3" json:"ports,omitempty"`
 	// credentials are injected by the egress gateway, so the task never holds
 	// them. The task sends each header with a placeholder value.

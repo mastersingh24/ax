@@ -80,7 +80,7 @@ spec:
           credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
 ```
 
-Each rule allows HTTPS to its `hosts` (a DNS name, or one with `*` as its leftmost label) on its `ports`. A `credentials` entry has the egress gateway replace that request header with the credential named by `credentialUri`, prefixed by `prefix`, so the task never holds the secret. The task sends the header with any placeholder value.
+Each rule allows HTTPS to its `hosts` (a DNS name, or one with `*` as its leftmost label) on its `ports` (443 when empty). Prefix a host with `http://` (for example `"http://switchboard.switchboard.svc.cluster.local"`) to emit a plain-HTTP egress rule instead (port 80 when `ports` is empty), for destinations such as in-cluster Services whose certificates the public-CA egress gateway cannot verify. A `credentials` entry has the egress gateway replace that request header with the credential named by `credentialUri`, prefixed by `prefix`, so the task never holds the secret. The task sends the header with any placeholder value.
 
 ### Serving an API (`spec.http`)
 
